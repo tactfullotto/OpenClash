@@ -8,10 +8,10 @@ import (
 
 func TestTokenize(t *testing.T) {
 	cases := map[string][]string{
-		`^https://a.com/x - reject`:                       {`^https://a.com/x`, `-`, `reject`},
-		`^https://a response-jq '.a = "b c"'`:             {`^https://a`, `response-jq`, `.a = "b c"`},
+		`^https://a.com/x - reject`:                                        {`^https://a.com/x`, `-`, `reject`},
+		`^https://a response-jq '.a = "b c"'`:                              {`^https://a`, `response-jq`, `.a = "b c"`},
 		`^https://a response-replace-regex "\"vip\":false" "\"vip\":true"`: {`^https://a`, `response-replace-regex`, `"vip":false`, `"vip":true`},
-		`^https?:\/\/a\.com\/(\d+)  https://b.com/$1   302`: {`^https?:\/\/a\.com\/(\d+)`, `https://b.com/$1`, `302`},
+		`^https?:\/\/a\.com\/(\d+)  https://b.com/$1   302`:                {`^https?:\/\/a\.com\/(\d+)`, `https://b.com/$1`, `302`},
 	}
 	for in, want := range cases {
 		got, err := tokenize(in)
