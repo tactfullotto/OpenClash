@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -285,6 +286,56 @@ func TestRejectedCertTriggersBypass(t *testing.T) {
 	resp.Body.Close()
 	if resp.TLS.PeerCertificates[0].Issuer.CommonName == e.authorit.Cert.Subject.CommonName {
 		t.Error("host should be tunnelled after the client rejected the certificate")
+	}
+}
+
+func TestSilentAbortNeedsRepeatsForBypass(t *testing.T) {
+	e := setup(t, testOverride)
+	pu, err := e.client.Transport.(*http.Transport).Proxy(&http.Request{URL: &url.URL{Scheme: "https", Host: "pinned.mitm.test"}})
+	if err != nil || pu == nil {
+		t.Fatalf("proxy url: %v %v", pu, err)
+	}
+	abort := func() {
+		raw, err := net.Dial("tcp", pu.Host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer raw.Close()
+		fmt.Fprintf(raw, "CONNECT pinned.mitm.test:443 HTTP/1.1\r\nHost: pinned.mitm.test:443\r\n\r\n")
+		br := bufio.NewReader(raw)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("CONNECT: %v %v", resp, err)
+		}
+		tc := tls.Client(raw, &tls.Config{ServerName: "pinned.mitm.test", InsecureSkipVerify: true,
+			VerifyConnection: func(tls.ConnectionState) error { raw.Close(); return io.EOF }})
+		_ = tc.Handshake()
+		time.Sleep(50 * time.Millisecond)
+	}
+	issuer := func() string {
+		resp, err := e.client.Get("https://pinned.mitm.test/")
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		resp.Body.Close()
+		return resp.TLS.PeerCertificates[0].Issuer.CommonName
+	}
+	abort()
+	if got := issuer(); got != e.authorit.Cert.Subject.CommonName {
+		t.Fatalf("a single silent abort must not bypass decryption, issuer=%q", got)
+	}
+	for i := 0; i < abortThreshold; i++ {
+		abort()
+	}
+	tr := e.client.Transport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	resp, err := (&http.Client{Transport: tr, Timeout: 10 * time.Second}).Get("https://pinned.mitm.test/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.TLS.PeerCertificates[0].Issuer.CommonName == e.authorit.Cert.Subject.CommonName {
+		t.Error("repeated silent aborts should bypass decryption")
 	}
 }
 

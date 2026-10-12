@@ -151,7 +151,7 @@ func cmdRun(args []string) error {
 		overrides := ov.load(log)
 		engine, warns := stash.Compile(overrides, ov.hosts)
 		for _, w := range warns {
-			log.Warn("override", "msg", w.String())
+			log.Warn("override", "warning", w.String())
 		}
 		log.Info("rules loaded", "overrides", len(overrides), "url-rewrite", len(engine.URL),
 			"header-rewrite", len(engine.Header), "body-rewrite", len(engine.Body))
@@ -219,7 +219,8 @@ func cmdClashPatch(args []string) error {
 	}
 	log, closeLog, _ := newLogger("", "info")
 	defer closeLog()
-	res, err := clashpatch.PatchFile(*config, ov.load(log), clashpatch.Options{
+	overrides := ov.load(log)
+	res, err := clashpatch.PatchFile(*config, overrides, clashpatch.Options{
 		EnginePort:  *enginePort,
 		OutPort:     *outPort,
 		SourceCIDRs: src,
@@ -228,6 +229,10 @@ func cmdClashPatch(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	_, compileWarns := stash.Compile(overrides, ov.hosts)
+	for _, w := range compileWarns {
+		fmt.Println("WARN", w.String())
 	}
 	for _, w := range res.Warnings {
 		fmt.Println("WARN", w)

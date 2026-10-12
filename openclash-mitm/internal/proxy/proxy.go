@@ -63,14 +63,29 @@ type Server struct {
 	intercL *chanListener
 	meta    sync.Map // net.Conn -> *connInfo
 	bypass  sync.Map // host -> time.Time
+
+	abortMu sync.Mutex
+	aborts  map[string]*abortCount
 }
+
+type abortCount struct {
+	n     int
+	first time.Time
+}
+
+// A silent close/reset can be a user cancelling a request, so it only counts
+// as a certificate rejection when it repeats.
+const (
+	abortThreshold = 3
+	abortWindow    = time.Minute
+)
 
 // New creates a proxy server using the given CA and rewrite engine.
 func New(cfg Config, authority *ca.Authority, engine *rewrite.Engine, log *slog.Logger) *Server {
 	if cfg.MaxBodySize <= 0 {
 		cfg.MaxBodySize = 4 << 20
 	}
-	s := &Server{cfg: cfg, ca: authority, log: log}
+	s := &Server{cfg: cfg, ca: authority, log: log, aborts: map[string]*abortCount{}}
 	s.dialer = net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
 	s.engine.Store(engine)
 	s.transport = &http.Transport{
@@ -226,7 +241,7 @@ func (s *Server) decryptTLS(c *bufConn, info *connInfo) {
 	err := tlsConn.HandshakeContext(ctx)
 	cancel()
 	if err != nil {
-		if s.cfg.BypassTTL > 0 && clientRejectedCert(err) {
+		if s.cfg.BypassTTL > 0 && s.clientRejectedCert(info.host, err) {
 			s.bypass.Store(info.host, time.Now().Add(s.cfg.BypassTTL))
 			s.log.Warn("client rejected MITM certificate, host is tunnelled without decryption for a while; trust the CA on the device or remove the host if the app pins certificates",
 				"host", info.host, "bypass", s.cfg.BypassTTL, "err", err)
@@ -243,12 +258,34 @@ func (s *Server) decryptTLS(c *bufConn, info *connInfo) {
 	}
 }
 
-func clientRejectedCert(err error) bool {
+func (s *Server) clientRejectedCert(host string, err error) bool {
 	msg := strings.ToLower(err.Error())
-	for _, s := range []string{"bad certificate", "unknown certificate", "certificate unknown", "unknown ca", "certificate required", "eof", "connection reset"} {
-		if strings.Contains(msg, s) {
-			return true
+	if strings.Contains(msg, "remote error") {
+		for _, alert := range []string{"bad certificate", "unknown certificate", "certificate unknown", "unknown ca", "certificate required", "unsupported certificate", "access denied"} {
+			if strings.Contains(msg, alert) {
+				return true
+			}
 		}
+		return false
+	}
+	if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !strings.Contains(msg, "connection reset") {
+		return false
+	}
+	s.abortMu.Lock()
+	defer s.abortMu.Unlock()
+	now := time.Now()
+	a := s.aborts[host]
+	if a == nil || now.Sub(a.first) > abortWindow {
+		if len(s.aborts) > 4096 {
+			s.aborts = map[string]*abortCount{}
+		}
+		a = &abortCount{first: now}
+		s.aborts[host] = a
+	}
+	a.n++
+	if a.n >= abortThreshold {
+		delete(s.aborts, host)
+		return true
 	}
 	return false
 }
