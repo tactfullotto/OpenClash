@@ -49,12 +49,20 @@ o.value = (status.version and status.version ~= "") and
 	(font_green..bold_on..status.version..bold_off..font_off.." "..((status.running == "1") and translate("Running") or translate("Not Running"))) or
 	(font_red..bold_on..translate("Not Installed")..bold_off..font_off)
 
+o = s:taboption("settings", Value, "mitm_engine_url", translate("Engine Download URL"))
+o.placeholder = "https://raw.githubusercontent.com/vernesong/OpenClash/core/master/mitm/openclash-mitm-{arch}.tar.gz"
+o.description = translate("Leave Empty To Use The Official Core Branch, {arch} Is Replaced With The Core Compiled Version Of Plugin Settings")
+
 o = s:taboption("settings", Button, "_mitm_core_download", translate("Download Engine"))
 o.inputtitle = translate("Check And Update")
 o.inputstyle = "reload"
 o.description = translate("Download The Engine Matching The Core Compiled Version Of Plugin Settings, Or Upload It Manually To").." /etc/openclash/core/openclash_mitm"
-o.write = function()
-	SYS.call(MITM_SH .. " core-download >/dev/null 2>&1 &")
+o.write = function(self, section)
+	local url = HTTP.formvalue("cbid.openclash."..section..".mitm_engine_url") or ""
+	if url ~= "" and not url:match("^https?://") then
+		url = ""
+	end
+	SYS.call(MITM_SH .. " core-download " .. UTIL.shellquote(url) .. " >/dev/null 2>&1 &")
 	HTTP.redirect(DISP.build_url("admin", "services", "openclash"))
 end
 

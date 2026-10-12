@@ -207,7 +207,8 @@ cmd_core_download() {
    fi
    branch=$(uci_get_config "release_branch" || echo master)
    cdn=$(uci_get_config "github_address_mod" || echo 0)
-   url="${2:-}"
+   url="${2:-$(uci_get_config "mitm_engine_url")}"
+   url="${url//\{arch\}/$cpu}"
    if [ -z "$url" ]; then
       case "$cdn" in
          0|*raw.githubusercontent.com*) url="https://raw.githubusercontent.com/vernesong/OpenClash/core/${branch}/mitm/openclash-mitm-${cpu}.tar.gz" ;;

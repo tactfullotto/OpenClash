@@ -4485,3 +4485,9 @@ msgstr "请输入有效的 URL"
 
 msgid "Update Overrides"
 msgstr "更新覆写"
+
+msgid "Engine Download URL"
+msgstr "引擎下载地址"
+
+msgid "Leave Empty To Use The Official Core Branch, {arch} Is Replaced With The Core Compiled Version Of Plugin Settings"
+msgstr "留空使用官方 core 分支，{arch} 会被替换为插件设置中的内核编译版本"
