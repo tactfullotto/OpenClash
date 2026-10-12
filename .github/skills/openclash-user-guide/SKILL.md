@@ -3879,7 +3879,7 @@ openclash_mitm (127.0.0.1:7899)
 |---------|------|------|
 | `mitm_enable` | `0` | 总开关，需重启 OpenClash 生效 |
 | `mitm_src` | *(空)* | 需要解密的 LAN 设备 IP/CIDR（DynamicList）；为空=所有设备 |
-| `mitm_hosts` | *(空)* | 额外的 MITM 域名（逗号分隔，Stash `mitm` 语法） |
+| `mitm_hosts` | *(空)* | 额外的 MITM 域名（DynamicList，Stash `mitm` 语法） |
 | `mitm_block_quic` | `1` | 阻断目标域名的 QUIC |
 | `mitm_skip_cert_verify` | `0` | 不校验上游服务器证书 |
 | `mitm_max_body_size` | `4` | body-rewrite 最大处理体积 (MB)，超出则原样透传 |
