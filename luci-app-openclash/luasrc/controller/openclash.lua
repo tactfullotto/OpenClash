@@ -69,6 +69,8 @@ function index()
 	entry({"admin", "services", "openclash", "announcement"}, call("action_announcement"))
 	entry({"admin", "services", "openclash", "settings"},cbi("openclash/settings"),_("Plugin Settings"), 30).leaf = true
 	entry({"admin", "services", "openclash", "config-overwrite"},cbi("openclash/config-overwrite"),_("Overwrite Settings"), 40).leaf = true
+	entry({"admin", "services", "openclash", "mitm"},cbi("openclash/mitm"),_("HTTP(S) Rewrite"), 45).leaf = true
+	entry({"admin", "services", "openclash", "mitm_ca"}, call("action_mitm_ca"))
 	entry({"admin", "services", "openclash", "config-subscribe"},cbi("openclash/config-subscribe"),_("Config Subscribe"), 60).leaf = true
 	entry({"admin", "services", "openclash", "servers"},cbi("openclash/servers"),nil).leaf = true
 	entry({"admin", "services", "openclash", "other-rules-edit"},cbi("openclash/other-rules-edit"), nil).leaf = true
@@ -2082,6 +2084,18 @@ function action_get_debug_logs()
 	local reader = ltn12_popen("exec cat '" .. logfile .. "'")
 	luci.ltn12.pump.all(reader, HTTP.write)
 	reader.kill()
+end
+
+function action_mitm_ca()
+	local cert = fs.readfile("/etc/openclash/mitm/ca.crt")
+	if not cert or cert == "" then
+		HTTP.status(404, "Not Found")
+		HTTP.write("certificate not generated")
+		return
+	end
+	HTTP.header("Content-Disposition", 'attachment; filename="openclash-mitm-ca.crt"')
+	HTTP.prepare_content("application/x-x509-ca-cert")
+	HTTP.write(cert)
 end
 
 function action_backup()

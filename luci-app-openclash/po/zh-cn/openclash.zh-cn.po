@@ -4359,3 +4359,129 @@ msgstr "版本号"
 msgid "to update individually"
 msgstr "则独立更新"
 
+
+msgid "HTTP(S) Rewrite"
+msgstr "HTTP(S) 改写"
+
+msgid "Decrypt the HTTPS traffic of selected hosts with a local root certificate and rewrite it with Stash override (.stoverride) rules, the rewritten traffic still follows the rules of the current config."
+msgstr "使用本地根证书解密指定主机的 HTTPS 流量，并按 Stash 覆写 (.stoverride) 规则改写，改写后的流量仍按当前配置文件的规则分流。"
+
+msgid "JavaScript (http.script) is not supported yet, those rules are ignored."
+msgstr "暂不支持 JavaScript 脚本 (http.script)，此类规则会被忽略。"
+
+msgid "Root Certificate"
+msgstr "根证书"
+
+msgid "Custom Override"
+msgstr "自定义覆写"
+
+msgid "Logs"
+msgstr "日志"
+
+msgid "Enable HTTP(S) Rewrite"
+msgstr "启用 HTTP(S) 改写"
+
+msgid "Take Effect After Restart, Recommended With Fake-IP Mode Or Sniffer Enabled So The Hostname Is Known"
+msgstr "重启后生效，建议使用 Fake-IP 模式或开启域名嗅探，以便识别主机名"
+
+msgid "Engine Version"
+msgstr "引擎版本"
+
+msgid "Not Installed"
+msgstr "未安装"
+
+msgid "Download Engine"
+msgstr "下载引擎"
+
+msgid "Download The Engine Matching The Core Compiled Version Of Plugin Settings, Or Upload It Manually To"
+msgstr "按插件设置中的内核编译版本下载引擎，也可手动上传至"
+
+msgid "Decrypted Devices"
+msgstr "解密设备"
+
+msgid "Only Decrypt And Rewrite The Traffic Of These LAN Devices (IP Or CIDR), Leave Empty For All Devices"
+msgstr "仅解密并改写这些局域网设备（IP 或 CIDR）的流量，留空表示所有设备"
+
+msgid "Extra MITM Hostnames"
+msgstr "额外解密主机名"
+
+msgid "Appended To The http.mitm Lists Of The Overrides, Supports * And ? Wildcards, - Prefix Excludes"
+msgstr "追加到覆写的 http.mitm 列表，支持 * 和 ? 通配符，- 前缀表示排除"
+
+msgid "Block QUIC Of Decrypted Hosts"
+msgstr "阻断解密主机的 QUIC"
+
+msgid "Reject UDP/443 To Decrypted Hosts So Clients Fall Back To TCP, Otherwise HTTP/3 Traffic Bypasses The Rewrite"
+msgstr "拒绝发往解密主机的 UDP/443，使客户端回落到 TCP，否则 HTTP/3 流量会绕过改写"
+
+msgid "Skip Server Certificate Verify"
+msgstr "跳过服务器证书验证"
+
+msgid "Not Recommended, Do Not Verify The Certificates Of The Real Servers"
+msgstr "不推荐，不验证真实服务器的证书"
+
+msgid "Max Body Size For Body Rewrite (MB)"
+msgstr "Body 改写最大体积 (MB)"
+
+msgid "Engine Port"
+msgstr "引擎端口"
+
+msgid "Engine Outbound Listener Port"
+msgstr "引擎回流监听端口"
+
+msgid "Decrypted Traffic Re-enters The Core From This Local Listener To Follow The Config Rules"
+msgstr "解密后的流量经此本地监听重新进入内核，按配置文件规则分流"
+
+msgid "Certificate Info"
+msgstr "证书信息"
+
+msgid "Expire Time"
+msgstr "到期时间"
+
+msgid "Not Generated, It Will Be Generated Automatically On Start"
+msgstr "尚未生成，启动时会自动生成"
+
+msgid "Certificate Page Port"
+msgstr "证书页面端口"
+
+msgid "Open This Page With The Phone To Install The Certificate, 0 Disables The Page"
+msgstr "用手机打开此页面安装证书，设为 0 关闭页面"
+
+msgid "iOS: Install The Profile, Then Enable Full Trust In Settings - General - About - Certificate Trust Settings"
+msgstr "iOS：安装描述文件后，在 设置 - 通用 - 关于本机 - 证书信任设置 中开启完全信任"
+
+msgid "Android 7+: Apps Do Not Trust User Certificates By Default, Only Browsers And Apps That Opt In Can Be Decrypted, Global Effect Requires Root"
+msgstr "Android 7 及以上：App 默认不信任用户证书，仅浏览器和声明信任用户证书的 App 可被解密，全局生效需要 Root"
+
+msgid "Download Certificate"
+msgstr "下载证书"
+
+msgid "Regenerate Certificate"
+msgstr "重新生成证书"
+
+msgid "Regenerate"
+msgstr "重新生成"
+
+msgid "All Devices Need To Reinstall And Trust The New Certificate"
+msgstr "所有设备都需要重新安装并信任新证书"
+
+msgid "Stash Override Syntax, Takes Precedence Over The Subscribed Overrides"
+msgstr "Stash 覆写语法，优先级高于订阅的覆写"
+
+msgid "Override Subscriptions"
+msgstr "覆写订阅"
+
+msgid "Stash Override (.stoverride) URLs, Downloaded On Start If Missing, Use The Update Button To Refresh"
+msgstr "Stash 覆写 (.stoverride) 地址，启动时如本地不存在会自动下载，点击更新按钮刷新"
+
+msgid "Override Name"
+msgstr "覆写名称"
+
+msgid "Override URL"
+msgstr "覆写地址"
+
+msgid "Please Enter A Valid URL"
+msgstr "请输入有效的 URL"
+
+msgid "Update Overrides"
+msgstr "更新覆写"
