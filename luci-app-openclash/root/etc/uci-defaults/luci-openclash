@@ -21,6 +21,8 @@ mkdir -p /etc/openclash/rule_provider
 mkdir -p /etc/openclash/core
 mkdir -p /etc/openclash/history
 mkdir -p /usr/share/openclash/backup/overwrite
+mkdir -p /etc/openclash/mitm/overrides
+chmod 700 /etc/openclash/mitm
 
 mkdir -p /lib/upgrade/keep.d
 cat > "/lib/upgrade/keep.d/luci-app-openclash" <<-EOF
