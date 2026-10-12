@@ -247,7 +247,8 @@ Dashboard: http://路由器LAN_IP:9090/ui/
 │   │   ├─ enable_custom_clash_rules → 从 *.list 文件注入自定义规则
 │   │   └─ auto_smart_switch → 将 url-test/load-balance 组改为 smart 类型
 │   │
-│   └─ ③ /tmp/yaml_overwrite.sh  → 来自覆写模块 [Overwrite] 段的自定义脚本
+│   ├─ ③ /tmp/yaml_overwrite.sh  → 来自覆写模块 [Overwrite] 段的自定义脚本
+│   └─ ④ openclash_mitm.sh patch → HTTP(S) 数据覆写（mitm_enable=1 时），见第九部分
 │
 ├─ 第4步: 启动核心
 │   └─ procd 启动 clash -d /etc/openclash -f <config.yaml>
@@ -3825,6 +3826,88 @@ fi
 
 > **类型说明**: `int_bool`=值为 `0` 或 `1`；`bool`=值为 `true` 或 `false`；`int`=纯整数；`string`=任意字符串。
 > 所有 key **大小写不敏感**，写入 UCI 时自动转换为小写。不在上表中的 key 会被 `check_type()` 校验拦截并输出 `skip General key not allowed` 警告。
+
+---
+
+# 第九部分：HTTP(S) 数据覆写 (MITM)
+
+> 菜单: `服务 → OpenClash → HTTP(S) 数据覆写`（`luasrc/model/cbi/openclash/mitm.lua`）
+> 作用: 复现 Stash/Loon 的「HTTP 数据覆写」——对指定域名做 HTTPS 解密（MITM），按 Stash 覆写（`.stoverride`）语法改写请求/响应，改写后的流量**仍按当前配置的规则分流到目标节点**
+> 引擎: 独立 sidecar 进程 `/etc/openclash/core/openclash_mitm`（源码 `openclash-mitm/`，Go 编写），由 procd 以 `openclash-mitm` 实例托管，与内核一起启停
+
+## 9.1 工作原理
+
+```
+LAN 设备 ──透明代理──▶ mihomo
+   规则: AND,((<mitm 域名>),(<来源设备>),(NOT,((IN-NAME,openclash-mitm-out)))),OpenClash-MITM
+      │                               (OpenClash-MITM = http 代理 127.0.0.1:mitm_port)
+      ▼
+openclash_mitm (127.0.0.1:7899)
+   ├─ 用本地根证书签发叶子证书，终止 TLS
+   ├─ url-rewrite / header-rewrite / body-rewrite
+   └─ HTTP CONNECT ──▶ mihomo 监听器 openclash-mitm-out (127.0.0.1:mitm_out_port, mixed)
+                           │ 重新匹配订阅规则（IN-NAME 排除避免回环）
+                           ▼
+                        目标节点 / DIRECT
+```
+
+- 启动时 `init.d` 在第 3 步末尾执行 `openclash_mitm.sh patch <config>`，调用 `openclash_mitm clash-patch` 修改 YAML：
+  - 注入代理 `OpenClash-MITM`、监听器 `openclash-mitm-out`
+  - 在 `rules` 最前插入 MITM 分流规则；`mitm_block_quic=1` 时追加 `AND,((NETWORK,UDP),(DST-PORT,443),<域名>),REJECT`，迫使 App 回落到 TCP/HTTPS
+  - 覆写中的 `rules:` 转换为 mihomo 规则后插入最前（`PROTOCOL,QUIC`→`NETWORK,UDP`+`DST-PORT,443` 等；不存在的策略/RULE-SET、`MATCH` 会被跳过并输出警告）；`rule-providers:` 合并进配置
+  - 重复执行是幂等的
+- 只有配置成功注入 `openclash-mitm-out` 时才会启动引擎实例
+- 证书被客户端拒绝（收到 TLS 告警，或同一域名 1 分钟内连续 3 次握手中断）时，该域名 10 分钟内改为直通不解密，避免证书固定（pinning）的 App 无法联网
+
+## 9.2 支持的 Stash 语法
+
+| 字段 | 支持情况 |
+|------|----------|
+| `http.mitm` | ✅ `*`/`?` 通配、`-` 排除、`:端口`（默认仅 443）、`+.` 后缀 |
+| `http.force-http-engine` | ✅ 视为需要接管的域名 |
+| `http.url-rewrite` | ✅ `reject` `reject-200` `reject-img` `reject-dict` `reject-array` `302` `307` `transparent` |
+| `http.header-rewrite` | ✅ `request-/response-` + `add` `del` `replace` `replace-regex` |
+| `http.body-rewrite` | ✅ `request-/response-` + `replace-regex`（多组）、`jq`；自动解压 gzip/deflate |
+| `http.script` | ❌ 暂不支持 JavaScript，解析后忽略并在日志中警告 |
+| `rules` / `rule-providers` | ✅ 合并进 mihomo 配置（见 9.1） |
+
+> 正则为 JavaScript 风格（支持前后断言），语法参考 [Stash Wiki](https://stash.wiki/)。
+
+## 9.3 UCI 选项
+
+| UCI Key | 默认 | 说明 |
+|---------|------|------|
+| `mitm_enable` | `0` | 总开关，需重启 OpenClash 生效 |
+| `mitm_src` | *(空)* | 需要解密的 LAN 设备 IP/CIDR（DynamicList）；为空=所有设备 |
+| `mitm_hosts` | *(空)* | 额外的 MITM 域名（逗号分隔，Stash `mitm` 语法） |
+| `mitm_block_quic` | `1` | 阻断目标域名的 QUIC |
+| `mitm_skip_cert_verify` | `0` | 不校验上游服务器证书 |
+| `mitm_max_body_size` | `4` | body-rewrite 最大处理体积 (MB)，超出则原样透传 |
+| `mitm_port` / `mitm_out_port` / `mitm_cert_port` | `7899` / `7898` / `7900` | 引擎端口 / 回环监听器端口 / 证书下载页端口（`0`=关闭） |
+| `mitm_log_level` | `info` | 引擎日志级别，日志位于 `/tmp/openclash_mitm.log` |
+| `mitm_engine_url` | *(空)* | 自定义引擎下载地址，`{arch}` 替换为 `core_version` |
+
+覆写订阅为 `config mitm_override` 段（`enabled` / `name` / `url`），下载到 `/etc/openclash/mitm/overrides/`；本地覆写编辑 `/etc/openclash/custom/openclash_custom_mitm.stoverride`。
+
+## 9.4 根证书安装
+
+- 根证书: `/etc/openclash/mitm/ca.crt`（私钥 `ca.key` 权限 0600），首次启用时自动生成，「根证书」标签页可下载/重新生成
+- 手机浏览器访问 `http://<路由器IP>:7900/` 下载证书（同页提供 iOS 描述文件 `ca.mobileconfig`）
+- **iOS**: 安装描述文件 → `设置 → 通用 → 关于本机 → 证书信任设置` 中开启完全信任
+- **Android 7+**: App 默认不信任用户证书，仅浏览器及声明信任用户证书的 App 可被解密；全局生效需 root 后安装为系统证书
+- 重新生成证书后所有设备都需要重新安装
+
+## 9.5 常用命令
+
+```bash
+/usr/share/openclash/openclash_mitm.sh status          # 引擎版本、运行状态、证书信息
+/usr/share/openclash/openclash_mitm.sh update          # 强制更新所有覆写订阅
+/usr/share/openclash/openclash_mitm.sh core-download   # 下载/更新引擎
+/etc/openclash/core/openclash_mitm check --override /etc/openclash/mitm/overrides/xxx.stoverride  # 校验覆写语法
+tail -f /tmp/openclash_mitm.log                         # 引擎日志
+```
+
+**排查要点**: 未解密 → 确认设备在 `mitm_src` 内、域名在 `mitm` 列表、使用 Fake-IP 或开启 Sniffer（规则需要域名）、日志中是否出现「client rejected MITM certificate」；App 无法联网 → 该 App 可能固定证书，从 `mitm` 中移除其域名。
 
 ---
 
