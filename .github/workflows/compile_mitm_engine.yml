@@ -1,0 +1,161 @@
+name: Compile The MITM Engine
+
+on:
+  push:
+    branches:
+      - master
+      - dev
+    paths:
+      - "openclash-mitm/**"
+      - ".github/workflows/compile_mitm_engine.yml"
+  pull_request:
+    paths:
+      - "openclash-mitm/**"
+      - ".github/workflows/compile_mitm_engine.yml"
+  workflow_dispatch:
+
+jobs:
+  Test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache-dependency-path: openclash-mitm/go.sum
+
+      - name: Vet And Test
+        working-directory: openclash-mitm
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test -race -count=1 ./...
+
+  Compile_Engine:
+    runs-on: ubuntu-latest
+    needs: Test
+    strategy:
+      matrix:
+        jobs:
+          - { goos: linux, goarch: '386',      output: '386',                   upxflag: '--lzma --best' }
+          - { goos: linux, goarch: amd64, goamd64: v1, output: amd64-compatible, upxflag: '--lzma --best' }
+          - { goos: linux, goarch: amd64, goamd64: v3, output: amd64,            upxflag: '--lzma --best' }
+          - { goos: linux, goarch: amd64, goamd64: v1, output: amd64-v1,         upxflag: '--lzma --best' }
+          - { goos: linux, goarch: amd64, goamd64: v2, output: amd64-v2,         upxflag: '--lzma --best' }
+          - { goos: linux, goarch: amd64, goamd64: v3, output: amd64-v3,         upxflag: '--lzma --best' }
+          - { goos: linux, goarch: arm,   goarm: '5',  output: armv5,            upxflag: '--lzma --best' }
+          - { goos: linux, goarch: arm,   goarm: '6',  output: armv6,            upxflag: '--lzma --best' }
+          - { goos: linux, goarch: arm,   goarm: '7',  output: armv7,            upxflag: '--lzma --best' }
+          - { goos: linux, goarch: arm64,              output: arm64,            upxflag: '--lzma --best' }
+          - { goos: linux, goarch: mips,   gomips: softfloat, output: mips-softfloat,   upxflag: '--lzma --best' }
+          - { goos: linux, goarch: mips,   gomips: hardfloat, output: mips-hardfloat,   upxflag: '--lzma --best' }
+          - { goos: linux, goarch: mipsle, gomips: softfloat, output: mipsle-softfloat, upxflag: '--best' }
+          - { goos: linux, goarch: mipsle, gomips: hardfloat, output: mipsle-hardfloat, upxflag: '--best' }
+          - { goos: linux, goarch: mips64,             output: mips64,           upxflag: '--lzma --best' }
+          - { goos: linux, goarch: mips64le,           output: mips64le,         upxflag: '--lzma --best' }
+          - { goos: linux, goarch: riscv64,            output: riscv64,          upxflag: '--lzma --best' }
+          - { goos: linux, goarch: s390x,              output: s390x,            upxflag: '--lzma --best' }
+          - { goos: linux, goarch: loong64,            output: loong64-abi2,     upxflag: '--lzma --best' }
+          - { goos: linux, goarch: loong64, abi: '1',  output: loong64-abi1,     upxflag: '--lzma --best' }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup UPX
+        run: |
+          wget -q https://github.com/upx/upx/releases/download/v3.95/upx-3.95-amd64_linux.tar.xz
+          tar xf upx-3.95-amd64_linux.tar.xz
+          echo "upx=${{ github.workspace }}/upx-3.95-amd64_linux/upx" >> $GITHUB_ENV
+
+      - name: Setup Go
+        if: ${{ !(matrix.jobs.goarch == 'loong64' && matrix.jobs.abi == '1') }}
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache-dependency-path: openclash-mitm/go.sum
+
+      - name: Setup Go for loongarch abi1
+        if: ${{ matrix.jobs.goarch == 'loong64' && matrix.jobs.abi == '1' }}
+        run: |
+          GO_TAR_FILE="go1.26.0.linux-amd64-abi1.tar.gz"
+          wget -q "https://github.com/MetaCubeX/loongarch64-golang/releases/download/1.26.0/$GO_TAR_FILE" -O "/tmp/$GO_TAR_FILE"
+          sudo rm -rf /usr/local/go
+          sudo tar zxf "/tmp/$GO_TAR_FILE" -C /usr/local
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+
+      - name: Build Engine (${{ matrix.jobs.output }})
+        working-directory: openclash-mitm
+        env:
+          GOOS: ${{ matrix.jobs.goos }}
+          GOARCH: ${{ matrix.jobs.goarch }}
+          GOAMD64: ${{ matrix.jobs.goamd64 }}
+          GOARM: ${{ matrix.jobs.goarm }}
+          GOMIPS: ${{ matrix.jobs.gomips }}
+          CGO_ENABLED: 0
+        run: |
+          set -e
+          VERSION="$(date -u +%Y%m%d)-g$(git rev-parse --short HEAD)"
+          mkdir -p ./bin ../build_output
+          go build -trimpath -ldflags "-X main.version=${VERSION} -w -s -buildid=" -o ./bin/openclash-mitm .
+          chmod +x ./bin/openclash-mitm
+          ${upx} ${{ matrix.jobs.upxflag }} ./bin/openclash-mitm || true
+          tar -zcvf ../build_output/openclash-mitm-linux-${{ matrix.jobs.output }}.tar.gz -C ./bin openclash-mitm
+
+      - name: Upload Engine Artifact (${{ matrix.jobs.output }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitm-engine-${{ matrix.jobs.output }}
+          path: build_output/openclash-mitm-linux-${{ matrix.jobs.output }}.tar.gz
+
+  Publish:
+    runs-on: ubuntu-latest
+    needs: Compile_Engine
+    if: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Switch To Core Branch
+        run: |
+          if git ls-remote --exit-code --heads origin core >/dev/null; then
+            git fetch --depth=1 origin core
+            git checkout -B core FETCH_HEAD
+          else
+            # Forks usually have no core branch; start one that only holds engine builds.
+            git checkout --orphan core
+            git rm -rfq .
+          fi
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./downloaded-artifacts
+          pattern: mitm-engine-*
+          merge-multiple: true
+
+      - name: Commit and push
+        run: |
+          # The plugin downloads from core/<release_branch>/mitm/.
+          target="${{ github.ref_name }}"
+          [ "$target" = "dev" ] || target="master"
+          for branch in $target $([ "$target" = "master" ] && echo dev); do
+            mkdir -p "./${branch}/mitm"
+            rm -f "./${branch}/mitm/"*.tar.gz
+            cp -f ./downloaded-artifacts/*.tar.gz "./${branch}/mitm/"
+            git add "./${branch}/mitm"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Auto update: MITM engine $(date -u +%Y%m%d)-g${GITHUB_SHA::7}"
+          git push origin core
