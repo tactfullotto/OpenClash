@@ -3891,11 +3891,18 @@ openclash_mitm (127.0.0.1:7899)
 
 ## 9.4 根证书安装
 
-- 根证书: `/etc/openclash/mitm/ca.crt`（私钥 `ca.key` 权限 0600），首次启用时自动生成，「根证书」标签页可下载/重新生成
-- 手机浏览器访问 `http://<路由器IP>:7900/` 下载证书（同页提供 iOS 描述文件 `ca.mobileconfig`）
+- 根证书: `/etc/openclash/mitm/ca.crt`（私钥 `ca.key` 权限 0600），首次启用时自动生成
+- LuCI「根证书」标签页可下载 `.crt` / `.pem` / `.mobileconfig`，也可重新生成
+- 手机浏览器访问 `http://<路由器IP>:7900/` 按指引安装（同页提供 iOS 描述文件）
 - **iOS**: 安装描述文件 → `设置 → 通用 → 关于本机 → 证书信任设置` 中开启完全信任
 - **Android 7+**: App 默认不信任用户证书，仅浏览器及声明信任用户证书的 App 可被解密；全局生效需 root 后安装为系统证书
 - 重新生成证书后所有设备都需要重新安装
+
+## 9.4.1 覆写导入
+
+- LuCI「导入覆写」标签：支持**上传本地 `.stoverride`** 或填写**订阅链接**（格式同 [iRingo.WeatherKit.stoverride](https://github.com/NSRingo/WeatherKit/releases/latest/download/iRingo.WeatherKit.stoverride)）
+- 导入结果写入 UCI `mitm_override`（`source=file|url`）并保存到 `/etc/openclash/mitm/overrides/`
+- `source=file` 的本地导入不会被「更新覆写」覆盖；`source=url` 仍按 interval/启动逻辑下载
 
 ## 9.5 常用命令
 

@@ -4456,6 +4456,12 @@ msgstr "Android 7 及以上：App 默认不信任用户证书，仅浏览器和�
 msgid "Download Certificate"
 msgstr "下载证书"
 
+msgid "iOS Profile"
+msgstr "iOS 描述文件"
+
+msgid "Prefer the phone page for guided installation"
+msgstr "推荐使用手机证书页按指引安装"
+
 msgid "Regenerate Certificate"
 msgstr "重新生成证书"
 
@@ -4465,14 +4471,47 @@ msgstr "重新生成"
 msgid "All Devices Need To Reinstall And Trust The New Certificate"
 msgstr "所有设备都需要重新安装并信任新证书"
 
+msgid "Import Override"
+msgstr "导入覆写"
+
+msgid "Import a Stash .stoverride from a local file or a subscription URL (for example iRingo.WeatherKit.stoverride)"
+msgstr "从本地文件或订阅链接导入 Stash .stoverride（例如 iRingo.WeatherKit.stoverride）"
+
+msgid "Support Stash override (.stoverride / .yaml / .yml), max size 2MB"
+msgstr "支持 Stash 覆写（.stoverride / .yaml / .yml），最大 2MB"
+
+msgid "Defaults to the file name without extension"
+msgstr "默认使用不含扩展名的文件名"
+
+msgid "Stash .stoverride subscription URL, downloaded on start or Update Overrides"
+msgstr "Stash .stoverride 订阅地址，启动时或点击更新覆写时下载"
+
+msgid "Importing..."
+msgstr "正在导入..."
+
+msgid "Import successful"
+msgstr "导入成功"
+
+msgid "Import failed"
+msgstr "导入失败"
+
+msgid "Please select a file first"
+msgstr "请先选择文件"
+
+msgid "File too large"
+msgstr "文件过大"
+
+msgid "Source"
+msgstr "来源"
+
 msgid "Stash Override Syntax, Takes Precedence Over The Subscribed Overrides"
 msgstr "Stash 覆写语法，优先级高于订阅的覆写"
 
 msgid "Override Subscriptions"
 msgstr "覆写订阅"
 
-msgid "Stash Override (.stoverride) URLs, Downloaded On Start If Missing, Use The Update Button To Refresh"
-msgstr "Stash 覆写 (.stoverride) 地址，启动时如本地不存在会自动下载，点击更新按钮刷新"
+msgid "Stash Override (.stoverride) rules imported from file or subscription URL. Remote URLs are downloaded on start if missing; use Update Overrides to refresh. Local file imports are kept as-is."
+msgstr "通过本地文件或订阅链接导入的 Stash 覆写 (.stoverride)。远程地址在启动时如本地不存在会自动下载，可用「更新覆写」刷新；本地文件导入不会被覆盖。"
 
 msgid "Override Name"
 msgstr "覆写名称"

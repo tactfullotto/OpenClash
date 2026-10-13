@@ -35,6 +35,7 @@ s.anonymous = true
 
 s:tab("settings", translate("General Settings"))
 s:tab("cert", translate("Root Certificate"))
+s:tab("import", translate("Import Override"))
 s:tab("custom", translate("Custom Override"))
 s:tab("log", translate("Logs"))
 
@@ -129,7 +130,14 @@ o.description = translate("Open This Page With The Phone To Install The Certific
 
 o = s:taboption("cert", DummyValue, "_mitm_ca_download", translate("Download Certificate"))
 o.rawhtml = true
-o.value = "<a class='btn cbi-button cbi-button-apply' href='"..DISP.build_url("admin", "services", "openclash", "mitm_ca").."'>"..translate("Download").."</a>"
+local ca_base = DISP.build_url("admin", "services", "openclash", "mitm_ca")
+o.value = "<div class='oc' style='display:flex;flex-wrap:wrap;gap:8px;'>"..
+	"<a class='btn cbi-button cbi-button-apply' href='"..ca_base.."?format=crt'>"..translate("Download").." (.crt)</a>"..
+	"<a class='btn cbi-button cbi-button-apply' href='"..ca_base.."?format=pem'>"..translate("Download").." (.pem)</a>"..
+	"<a class='btn cbi-button cbi-button-apply' href='"..ca_base.."?format=mobileconfig'>"..translate("iOS Profile").." (.mobileconfig)</a>"..
+	"</div>"..
+	"<div style='margin-top:8px;'>"..translate("Prefer the phone page for guided installation")..": "..
+	"<a href='http://"..lan_ip..":"..cert_port.."/' target='_blank'>http://"..lan_ip..":"..cert_port.."/</a></div>"
 
 o = s:taboption("cert", Button, "_mitm_regen_ca", translate("Regenerate Certificate"))
 o.inputtitle = translate("Regenerate")
@@ -139,6 +147,11 @@ o.write = function()
 	SYS.call(MITM_SH .. " regen-ca >/dev/null 2>&1")
 	HTTP.redirect(DISP.build_url("admin", "services", "openclash", "mitm"))
 end
+
+---- Import Override (file / subscription URL)
+o = s:taboption("import", DummyValue, "_mitm_import", translate("Import Override"))
+o.template = "openclash/mitm_import"
+o.description = translate("Import a Stash .stoverride from a local file or a subscription URL (for example iRingo.WeatherKit.stoverride)")
 
 ---- Custom Override
 custom = s:taboption("custom", Value, "_mitm_custom")
@@ -169,9 +182,9 @@ function o.cfgvalue(self, section)
 end
 function o.write() return true end
 
--- [[ Override Subscriptions ]] --
+-- [[ Override Subscriptions / Imports ]] --
 ov = m:section(TypedSection, "mitm_override", translate("Override Subscriptions"),
-	translate("Stash Override (.stoverride) URLs, Downloaded On Start If Missing, Use The Update Button To Refresh"))
+	translate("Stash Override (.stoverride) rules imported from file or subscription URL. Remote URLs are downloaded on start if missing; use Update Overrides to refresh. Local file imports are kept as-is."))
 ov.anonymous = true
 ov.addremove = true
 ov.sortable = true
@@ -195,10 +208,20 @@ function o.validate(self, value, section)
 	return value
 end
 
+o = ov:option(ListValue, "source", translate("Source"))
+o:value("url", translate("Subscribe Link"))
+o:value("file", translate("Upload File"))
+o.default = "url"
+
 o = ov:option(Value, "url", translate("Override URL"))
-o.rmempty = false
+o.rmempty = true
 o.placeholder = "https://github.com/NSRingo/WeatherKit/releases/latest/download/iRingo.WeatherKit.stoverride"
+o.datatype = "string"
 function o.validate(self, value, section)
+	local src = m.uci:get("openclash", section, "source") or "url"
+	if src == "file" then
+		return value or ""
+	end
 	if value and value:match("^https?://") then
 		return value
 	end

@@ -39,13 +39,24 @@ mitm_lan_ip() {
 }
 
 update_override() {
-   local section="$1" force="$2" enabled name url file
+   local section="$1" force="$2" enabled name url file source
    config_get_bool enabled "$section" "enabled" 1
    config_get name "$section" "name"
    config_get url "$section" "url"
+   config_get source "$section" "source" "url"
    [ "$enabled" -eq 1 ] || return 0
-   [ -n "$name" ] && [ -n "$url" ] || return 0
+   [ -n "$name" ] || return 0
    file=$(mitm_override_file "$name")
+   # Local file imports are written by LuCI; do not overwrite on update.
+   if [ "$source" = "file" ]; then
+      [ -s "$file" ] || LOG_WARN "MITM Override【${name}】Local File Missing"
+      return 0
+   fi
+   [ -n "$url" ] || return 0
+   case "$url" in
+      http://*|https://*) ;;
+      *) LOG_WARN "MITM Override【${name}】Invalid URL, Skip..."; return 0 ;;
+   esac
    [ "$force" != "1" ] && [ -s "$file" ] && return 0
    mkdir -p "$MITM_OVERRIDE_DIR"
    LOG_OUT "Downloading MITM Override【${name}】..."

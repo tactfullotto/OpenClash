@@ -1,0 +1,189 @@
+<%+cbi/valueheader%>
+<%
+	local fs = require "luci.openclash"
+	local plugin_version = fs.oc_version()
+	local disp = require "luci.dispatcher"
+	local upload_url = disp.build_url("admin", "services", "openclash", "mitm_upload_override")
+	local subscribe_url = disp.build_url("admin", "services", "openclash", "mitm_add_override")
+%>
+<script src="/luci-static/resources/openclash/js/oc-icons.js?v=<%=plugin_version%>"></script>
+<div class="oc mitm-import-panel">
+	<div class="config-upload-model" style="position:relative;max-width:100%;box-shadow:none;margin:0;">
+		<div class="config-upload-content" style="padding:0;">
+			<div class="upload-mode-selector">
+				<div class="mode-tabs">
+					<button type="button" class="mode-tab active" id="mitm-mode-file" data-mode="file">
+						<svg width="16" height="16"><use href="#oc-icon-upload"/></svg>
+						<%:Upload File%>
+					</button>
+					<button type="button" class="mode-tab" id="mitm-mode-subscribe" data-mode="subscribe">
+						<svg width="15" height="15"><use href="#oc-icon-link"/></svg>
+						<%:Subscribe Link%>
+					</button>
+				</div>
+			</div>
+
+			<div class="upload-mode-content" id="mitm-mode-file-content">
+				<div class="upload-zone" id="mitm-upload-zone">
+					<div class="upload-icon">
+						<svg width="48" height="48"><use href="#oc-icon-upload"/></svg>
+					</div>
+					<div class="upload-text">
+						<div class="upload-primary"><%:Click to select file or drag and drop%></div>
+						<div class="upload-secondary"><%:Support Stash override (.stoverride / .yaml / .yml), max size 2MB%></div>
+					</div>
+					<input type="file" id="mitm-file-input" accept=".stoverride,.yaml,.yml,text/yaml,text/plain" class="oc-hidden">
+				</div>
+				<div class="form-group" style="margin-top:12px;">
+					<label for="mitm-file-name"><%:Override Name%> (<%:Optional%>):</label>
+					<input type="text" id="mitm-file-name" class="form-input" placeholder="iRingo.WeatherKit" />
+					<div class="form-help"><%:Defaults to the file name without extension%></div>
+				</div>
+				<div class="config-upload-footer" style="margin-top:12px;">
+					<div class="config-upload-status" id="mitm-file-status"></div>
+					<div class="config-upload-buttons">
+						<button type="button" class="btn upload-btn" id="mitm-file-submit"><%:Import Override%></button>
+					</div>
+				</div>
+			</div>
+
+			<div class="upload-mode-content oc-hidden" id="mitm-mode-subscribe-content">
+				<div class="subscribe-form">
+					<div class="form-group">
+						<label for="mitm-sub-name"><%:Override Name%>:</label>
+						<input type="text" id="mitm-sub-name" class="form-input" placeholder="iRingo.WeatherKit" />
+					</div>
+					<div class="form-group">
+						<label for="mitm-sub-url"><%:Override URL%>:</label>
+						<textarea id="mitm-sub-url" class="form-textarea" rows="3" placeholder="https://github.com/NSRingo/WeatherKit/releases/latest/download/iRingo.WeatherKit.stoverride"></textarea>
+						<div class="form-help"><%:Stash .stoverride subscription URL, downloaded on start or Update Overrides%></div>
+					</div>
+				</div>
+				<div class="config-upload-footer" style="margin-top:12px;">
+					<div class="config-upload-status" id="mitm-sub-status"></div>
+					<div class="config-upload-buttons">
+						<button type="button" class="btn upload-btn" id="mitm-sub-submit"><%:Import Override%></button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<script type="text/javascript">//<![CDATA[
+(function () {
+	var fileTab = document.getElementById('mitm-mode-file');
+	var subTab = document.getElementById('mitm-mode-subscribe');
+	var fileContent = document.getElementById('mitm-mode-file-content');
+	var subContent = document.getElementById('mitm-mode-subscribe-content');
+	var zone = document.getElementById('mitm-upload-zone');
+	var input = document.getElementById('mitm-file-input');
+	var nameInput = document.getElementById('mitm-file-name');
+	var fileStatus = document.getElementById('mitm-file-status');
+	var subStatus = document.getElementById('mitm-sub-status');
+	var selectedFile = null;
+
+	function setMode(mode) {
+		var isFile = mode === 'file';
+		fileTab.classList.toggle('active', isFile);
+		subTab.classList.toggle('active', !isFile);
+		fileContent.classList.toggle('oc-hidden', !isFile);
+		subContent.classList.toggle('oc-hidden', isFile);
+	}
+	fileTab.addEventListener('click', function () { setMode('file'); });
+	subTab.addEventListener('click', function () { setMode('subscribe'); });
+
+	function pickFile(file) {
+		if (!file) return;
+		selectedFile = file;
+		var base = file.name.replace(/\.(stoverride|ya?ml)$/i, '');
+		if (!nameInput.value) nameInput.value = base;
+		fileStatus.textContent = file.name + ' (' + Math.round(file.size / 1024) + ' KB)';
+	}
+
+	zone.addEventListener('click', function () { input.click(); });
+	input.addEventListener('change', function () { pickFile(input.files && input.files[0]); });
+	['dragenter', 'dragover'].forEach(function (ev) {
+		zone.addEventListener(ev, function (e) {
+			e.preventDefault();
+			zone.classList.add('dragover');
+		});
+	});
+	['dragleave', 'drop'].forEach(function (ev) {
+		zone.addEventListener(ev, function (e) {
+			e.preventDefault();
+			zone.classList.remove('dragover');
+			if (ev === 'drop' && e.dataTransfer && e.dataTransfer.files[0]) {
+				pickFile(e.dataTransfer.files[0]);
+			}
+		});
+	});
+
+	function postJSON(url, body, statusEl, done) {
+		statusEl.textContent = '<%:Importing...%>';
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', url, true);
+		xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+		xhr.onload = function () {
+			var res = {};
+			try { res = JSON.parse(xhr.responseText || '{}'); } catch (e) {}
+			if (xhr.status >= 200 && xhr.status < 300 && res.status === 'success') {
+				statusEl.textContent = res.message || '<%:Import successful%>';
+				done && done(res);
+			} else {
+				statusEl.textContent = (res && res.message) || ('<%:Import failed%> (' + xhr.status + ')');
+			}
+		};
+		xhr.onerror = function () {
+			statusEl.textContent = '<%:Import failed%>';
+		};
+		xhr.send(body);
+	}
+
+	document.getElementById('mitm-file-submit').addEventListener('click', function () {
+		if (!selectedFile) {
+			fileStatus.textContent = '<%:Please select a file first%>';
+			return;
+		}
+		if (selectedFile.size > 2 * 1024 * 1024) {
+			fileStatus.textContent = '<%:File too large%>';
+			return;
+		}
+		fileStatus.textContent = '<%:Importing...%>';
+		var reader = new FileReader();
+		reader.onload = function (e) {
+			var fd = new FormData();
+			fd.append('override_file', e.target.result);
+			fd.append('filename', selectedFile.name);
+			fd.append('name', nameInput.value || '');
+			postJSON('<%=upload_url%>', fd, fileStatus, function () {
+				setTimeout(function () { location.reload(); }, 800);
+			});
+		};
+		reader.onerror = function () {
+			fileStatus.textContent = '<%:Import failed%>';
+		};
+		reader.readAsText(selectedFile);
+	});
+
+	document.getElementById('mitm-sub-submit').addEventListener('click', function () {
+		var name = (document.getElementById('mitm-sub-name').value || '').trim();
+		var url = (document.getElementById('mitm-sub-url').value || '').trim();
+		if (!name) {
+			subStatus.textContent = '<%:Override Name%>: <%:Not Null%>';
+			return;
+		}
+		if (!/^https?:\/\//i.test(url)) {
+			subStatus.textContent = '<%:Please Enter A Valid URL%>';
+			return;
+		}
+		var fd = new FormData();
+		fd.append('name', name);
+		fd.append('url', url);
+		postJSON('<%=subscribe_url%>', fd, subStatus, function () {
+			setTimeout(function () { location.reload(); }, 800);
+		});
+	});
+})();
+//]]></script>
+<%+cbi/valuefooter%>

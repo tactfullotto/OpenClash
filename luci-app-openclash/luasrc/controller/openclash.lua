@@ -71,6 +71,8 @@ function index()
 	entry({"admin", "services", "openclash", "config-overwrite"},cbi("openclash/config-overwrite"),_("Overwrite Settings"), 40).leaf = true
 	entry({"admin", "services", "openclash", "mitm"},cbi("openclash/mitm"),_("HTTP(S) Rewrite"), 45).leaf = true
 	entry({"admin", "services", "openclash", "mitm_ca"}, call("action_mitm_ca"))
+	entry({"admin", "services", "openclash", "mitm_upload_override"}, call("action_mitm_upload_override"))
+	entry({"admin", "services", "openclash", "mitm_add_override"}, call("action_mitm_add_override"))
 	entry({"admin", "services", "openclash", "config-subscribe"},cbi("openclash/config-subscribe"),_("Config Subscribe"), 60).leaf = true
 	entry({"admin", "services", "openclash", "servers"},cbi("openclash/servers"),nil).leaf = true
 	entry({"admin", "services", "openclash", "other-rules-edit"},cbi("openclash/other-rules-edit"), nil).leaf = true
@@ -2086,16 +2088,199 @@ function action_get_debug_logs()
 	reader.kill()
 end
 
+local function mitm_ca_der()
+	local pem = "/etc/openclash/mitm/ca.crt"
+	if not fs.isfile(pem) then
+		return nil
+	end
+	return SYS.exec("openssl x509 -in " .. UTIL.shellquote(pem) .. " -outform DER 2>/dev/null")
+end
+
+local function mitm_mobileconfig()
+	-- Prefer the engine cert page logic via openssl helpers already on the device.
+	local pem = "/etc/openclash/mitm/ca.crt"
+	local b64 = SYS.exec("openssl x509 -in " .. UTIL.shellquote(pem) .. " -outform DER 2>/dev/null | openssl base64 -A 2>/dev/null")
+	if not b64 or b64 == "" then
+		return nil
+	end
+	local cn = SYS.exec("openssl x509 -in " .. UTIL.shellquote(pem) .. " -noout -subject 2>/dev/null | sed -n 's/.*CN *= *//p'")
+	cn = (cn or ""):gsub("%s+$", "")
+	if cn == "" then cn = "OpenClash MITM CA" end
+	cn = UTIL.pcdata(cn)
+	local hash = SYS.exec("openssl x509 -in " .. UTIL.shellquote(pem) .. " -outform DER 2>/dev/null | md5sum | cut -c1-32"):gsub("%s+$", "")
+	if not hash or #hash < 32 then
+		hash = "a1b2c3d4e5f67890abcdef1234567890"
+	end
+	local u1 = string.format("%s-%s-%s-%s-%s", hash:sub(1,8), hash:sub(9,12), hash:sub(13,16), hash:sub(17,20), hash:sub(21,32)):upper()
+	local u2 = string.format("%s-%s-%s-%s-%s", hash:sub(17,24), hash:sub(25,28), hash:sub(29,32), hash:sub(1,4), hash:sub(5,16)):upper()
+	return string.format([[<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadCertificateFileName</key>
+			<string>openclash-mitm-ca.cer</string>
+			<key>PayloadContent</key>
+			<data>%s</data>
+			<key>PayloadDescription</key>
+			<string>OpenClash MITM root certificate</string>
+			<key>PayloadDisplayName</key>
+			<string>%s</string>
+			<key>PayloadIdentifier</key>
+			<string>com.apple.security.root.%s</string>
+			<key>PayloadType</key>
+			<string>com.apple.security.root</string>
+			<key>PayloadUUID</key>
+			<string>%s</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+	<key>PayloadDisplayName</key>
+	<string>OpenClash MITM</string>
+	<key>PayloadIdentifier</key>
+	<string>com.openclash.mitm.%s</string>
+	<key>PayloadRemovalDisallowed</key>
+	<false/>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>%s</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+</dict>
+</plist>
+]], b64, cn, u1, u1, u2, u2)
+end
+
 function action_mitm_ca()
+	local format = HTTP.formvalue("format") or "crt"
 	local cert = fs.readfile("/etc/openclash/mitm/ca.crt")
 	if not cert or cert == "" then
 		HTTP.status(404, "Not Found")
 		HTTP.write("certificate not generated")
 		return
 	end
-	HTTP.header("Content-Disposition", 'attachment; filename="openclash-mitm-ca.crt"')
-	HTTP.prepare_content("application/x-x509-ca-cert")
-	HTTP.write(cert)
+	if format == "pem" then
+		HTTP.header("Content-Disposition", 'attachment; filename="openclash-mitm-ca.pem"')
+		HTTP.prepare_content("application/x-pem-file")
+		HTTP.write(cert)
+		return
+	end
+	if format == "mobileconfig" then
+		local body = mitm_mobileconfig()
+		if not body then
+			HTTP.status(500, "Internal Server Error")
+			HTTP.write("failed to encode certificate")
+			return
+		end
+		HTTP.header("Content-Disposition", 'attachment; filename="openclash-mitm.mobileconfig"')
+		HTTP.prepare_content("application/x-apple-aspen-config")
+		HTTP.write(body)
+		return
+	end
+	-- default: DER .crt for Android installers
+	local der = mitm_ca_der()
+	if der and der ~= "" then
+		HTTP.header("Content-Disposition", 'attachment; filename="openclash-mitm-ca.crt"')
+		HTTP.prepare_content("application/x-x509-ca-cert")
+		HTTP.write(der)
+	else
+		HTTP.header("Content-Disposition", 'attachment; filename="openclash-mitm-ca.crt"')
+		HTTP.prepare_content("application/x-x509-ca-cert")
+		HTTP.write(cert)
+	end
+end
+
+local function mitm_override_target(name)
+	local safe = name:gsub("[^%w%._%-]", "_"):sub(1, 48)
+	if safe == "" then safe = "override" end
+	local hash = SYS.exec("printf '%s' " .. UTIL.shellquote(name) .. " | md5sum | cut -c1-8"):gsub("%s+$", "")
+	return "/etc/openclash/mitm/overrides/" .. safe .. "_" .. hash .. ".stoverride"
+end
+
+local function mitm_find_override_section(uci, name)
+	local found
+	uci:foreach("openclash", "mitm_override", function(s)
+		if s.name == name then
+			found = s[".name"]
+			return false
+		end
+	end)
+	return found
+end
+
+function action_mitm_upload_override()
+	local upload = HTTP.formvalue("override_file")
+	local filename = HTTP.formvalue("filename") or ""
+	local name = HTTP.formvalue("name") or ""
+	HTTP.prepare_content("application/json")
+	if not upload or upload == "" then
+		HTTP.write_json({status = "error", message = "No file uploaded"})
+		return
+	end
+	if #upload > 2 * 1024 * 1024 then
+		HTTP.write_json({status = "error", message = "File too large"})
+		return
+	end
+	if name == "" then
+		name = filename:gsub("%.[^%.]+$", ""):gsub("^.+/", "")
+	end
+	name = name:match("^%s*(.-)%s*$") or ""
+	if name == "" then
+		HTTP.write_json({status = "error", message = "Override name required"})
+		return
+	end
+	-- basic stoverride sanity: must look like YAML with http: or name:
+	if not upload:find("http%s*:") and not upload:find("name%s*:") and not upload:find("script%-providers%s*:") then
+		HTTP.write_json({status = "error", message = "Not a valid Stash override (.stoverride)"})
+		return
+	end
+	SYS.call("mkdir -p /etc/openclash/mitm/overrides")
+	local path = mitm_override_target(name)
+	fs.writefile(path, upload)
+	local uci = require("luci.model.uci").cursor()
+	local section = mitm_find_override_section(uci, name)
+	if not section then
+		section = uci:add("openclash", "mitm_override")
+	end
+	uci:set("openclash", section, "enabled", "1")
+	uci:set("openclash", section, "name", name)
+	uci:set("openclash", section, "source", "file")
+	uci:set("openclash", section, "url", "")
+	uci:commit("openclash")
+	HTTP.write_json({status = "success", message = "Imported " .. name, path = path})
+end
+
+function action_mitm_add_override()
+	local name = HTTP.formvalue("name") or ""
+	local url = HTTP.formvalue("url") or ""
+	HTTP.prepare_content("application/json")
+	name = name:match("^%s*(.-)%s*$") or ""
+	url = url:match("^%s*(.-)%s*$") or ""
+	if name == "" then
+		HTTP.write_json({status = "error", message = "Override name required"})
+		return
+	end
+	if not url:match("^https?://") then
+		HTTP.write_json({status = "error", message = "Please enter a valid URL"})
+		return
+	end
+	local uci = require("luci.model.uci").cursor()
+	local section = mitm_find_override_section(uci, name)
+	if not section then
+		section = uci:add("openclash", "mitm_override")
+	end
+	uci:set("openclash", section, "enabled", "1")
+	uci:set("openclash", section, "name", name)
+	uci:set("openclash", section, "source", "url")
+	uci:set("openclash", section, "url", url)
+	uci:commit("openclash")
+	-- download immediately
+	SYS.call("/usr/share/openclash/openclash_mitm.sh update >/dev/null 2>&1 &")
+	HTTP.write_json({status = "success", message = "Subscription added: " .. name})
 end
 
 function action_backup()
