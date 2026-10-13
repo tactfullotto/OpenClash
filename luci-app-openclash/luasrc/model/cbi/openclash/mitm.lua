@@ -218,7 +218,9 @@ o.rmempty = true
 o.placeholder = "https://github.com/NSRingo/WeatherKit/releases/latest/download/iRingo.WeatherKit.stoverride"
 o.datatype = "string"
 function o.validate(self, value, section)
-	local src = m.uci:get("openclash", section, "source") or "url"
+	local src = HTTP.formvalue("cbid.openclash." .. section .. ".source")
+		or m.uci:get("openclash", section, "source")
+		or "url"
 	if src == "file" then
 		return value or ""
 	end
