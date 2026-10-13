@@ -25,6 +25,7 @@ import (
 	"github.com/vernesong/OpenClash/openclash-mitm/internal/clashpatch"
 	"github.com/vernesong/OpenClash/openclash-mitm/internal/proxy"
 	"github.com/vernesong/OpenClash/openclash-mitm/internal/rewrite"
+	"github.com/vernesong/OpenClash/openclash-mitm/internal/script"
 	"github.com/vernesong/OpenClash/openclash-mitm/internal/stash"
 )
 
@@ -128,6 +129,8 @@ func cmdRun(args []string) error {
 	maxBody := fs.Int64("max-body-size", 4<<20, "largest body buffered for body-rewrite, bytes")
 	skipVerify := fs.Bool("skip-server-cert-verify", false, "do not verify origin server certificates")
 	bypassTTL := fs.Duration("bypass-ttl", 10*time.Minute, "tunnel a host without decryption after the client rejects the certificate, 0 disables")
+	scriptDir := fs.String("script-dir", "/etc/openclash/mitm/scripts", "directory caching script-providers downloads")
+	storeDir := fs.String("store-dir", "/etc/openclash/mitm/store", "directory for $persistentStore")
 	logFile := fs.String("log-file", "", "log file, empty for stderr")
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	_ = fs.Parse(args)
@@ -147,14 +150,24 @@ func cmdRun(args []string) error {
 	}
 	log.Info("root certificate loaded", "name", authority.Cert.Subject.CommonName, "sha1", authority.Fingerprint())
 
+	loader, err := script.NewLoader(*scriptDir, nil)
+	if err != nil {
+		return fmt.Errorf("script dir: %w", err)
+	}
+	runner, err := script.NewRunner(*storeDir, *upstream, version, *skipVerify, log)
+	if err != nil {
+		return fmt.Errorf("script store: %w", err)
+	}
+	compileOpts := &stash.CompileOptions{Loader: loader}
+
 	compile := func() *rewrite.Engine {
 		overrides := ov.load(log)
-		engine, warns := stash.Compile(overrides, ov.hosts)
+		engine, warns := stash.Compile(overrides, ov.hosts, compileOpts)
 		for _, w := range warns {
 			log.Warn("override", "warning", w.String())
 		}
 		log.Info("rules loaded", "overrides", len(overrides), "url-rewrite", len(engine.URL),
-			"header-rewrite", len(engine.Header), "body-rewrite", len(engine.Body))
+			"header-rewrite", len(engine.Header), "body-rewrite", len(engine.Body), "script", len(engine.Scripts))
 		return engine
 	}
 	srv := proxy.New(proxy.Config{
@@ -163,7 +176,7 @@ func cmdRun(args []string) error {
 		SkipServerCertVerify: *skipVerify,
 		MaxBodySize:          *maxBody,
 		BypassTTL:            *bypassTTL,
-	}, authority, compile(), log)
+	}, authority, compile(), runner, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -230,7 +243,7 @@ func cmdClashPatch(args []string) error {
 	if err != nil {
 		return err
 	}
-	_, compileWarns := stash.Compile(overrides, ov.hosts)
+	_, compileWarns := stash.Compile(overrides, ov.hosts, nil)
 	for _, w := range compileWarns {
 		fmt.Println("WARN", w.String())
 	}
@@ -285,16 +298,13 @@ func cmdCheck(args []string) error {
 	for _, err := range errs {
 		fmt.Println("ERROR", err)
 	}
-	engine, warns := stash.Compile(overrides, ov.hosts)
+	loader, _ := script.NewLoader(os.TempDir(), nil)
+	engine, warns := stash.Compile(overrides, ov.hosts, &stash.CompileOptions{Loader: loader})
 	for _, w := range warns {
 		fmt.Println("WARN", w.String())
 	}
-	scripts := 0
-	for _, o := range overrides {
-		scripts += len(o.HTTP.Script)
-	}
-	fmt.Printf("overrides=%d mitm-hosts=%d url-rewrite=%d header-rewrite=%d body-rewrite=%d script(ignored)=%d\n",
-		len(overrides), len(stash.MITMHosts(overrides, ov.hosts)), len(engine.URL), len(engine.Header), len(engine.Body), scripts)
+	fmt.Printf("overrides=%d mitm-hosts=%d url-rewrite=%d header-rewrite=%d body-rewrite=%d script=%d\n",
+		len(overrides), len(stash.MITMHosts(overrides, ov.hosts)), len(engine.URL), len(engine.Header), len(engine.Body), len(engine.Scripts))
 	if len(errs) > 0 {
 		return errors.New("some overrides failed to load")
 	}

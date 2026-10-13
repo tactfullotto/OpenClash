@@ -10,10 +10,10 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/vernesong/OpenClash/openclash-mitm/internal/rewrite"
+	"github.com/vernesong/OpenClash/openclash-mitm/internal/script"
 )
 
-// Script is a http.script entry. Scripts are parsed so that they can be
-// reported, but the engine does not execute JavaScript yet.
+// Script is a http.script entry.
 type Script struct {
 	Match       string `yaml:"match"`
 	Name        string `yaml:"name"`
@@ -24,6 +24,9 @@ type Script struct {
 	MaxSize     int    `yaml:"max-size"`
 	Argument    any    `yaml:"argument"`
 }
+
+// ScriptProvider is a script-providers entry.
+type ScriptProvider = script.Provider
 
 // HTTP is the http section of an override.
 type HTTP struct {
@@ -37,12 +40,13 @@ type HTTP struct {
 
 // Override is a parsed .stoverride file.
 type Override struct {
-	Path          string               `yaml:"-"`
-	Name          string               `yaml:"name"`
-	Desc          string               `yaml:"desc"`
-	HTTP          HTTP                 `yaml:"http"`
-	Rules         []string             `yaml:"rules"`
-	RuleProviders map[string]yaml.Node `yaml:"rule-providers"`
+	Path            string                    `yaml:"-"`
+	Name            string                    `yaml:"name"`
+	Desc            string                    `yaml:"desc"`
+	HTTP            HTTP                      `yaml:"http"`
+	Rules           []string                  `yaml:"rules"`
+	RuleProviders   map[string]yaml.Node      `yaml:"rule-providers"`
+	ScriptProviders map[string]ScriptProvider `yaml:"script-providers"`
 }
 
 // DisplayName returns the override name, falling back to the file name.
@@ -116,15 +120,25 @@ type Warning struct {
 
 func (w Warning) String() string { return w.Source + ": " + w.Msg }
 
+// CompileOptions controls optional script loading while compiling.
+type CompileOptions struct {
+	Loader *script.Loader
+}
+
 // Compile builds the rewrite engine from the overrides. extraHosts are
-// appended to the http.mitm list.
-func Compile(overrides []*Override, extraHosts []string) (*rewrite.Engine, []Warning) {
+// appended to the http.mitm list. opts may be nil; without a Loader, script
+// rules that need a remote provider are skipped with a warning.
+func Compile(overrides []*Override, extraHosts []string, opts *CompileOptions) (*rewrite.Engine, []Warning) {
 	var warns []Warning
 	hosts, errs := rewrite.NewHostMatcher(MITMHosts(overrides, extraHosts))
 	for _, err := range errs {
 		warns = append(warns, Warning{Source: "mitm", Msg: err.Error()})
 	}
 	e := &rewrite.Engine{Hosts: hosts}
+	var loader *script.Loader
+	if opts != nil {
+		loader = opts.Loader
+	}
 	for _, o := range overrides {
 		src := o.DisplayName()
 		for _, line := range o.HTTP.URLRewrite {
@@ -151,11 +165,45 @@ func Compile(overrides []*Override, extraHosts []string) (*rewrite.Engine, []War
 			}
 			e.Body = append(e.Body, r)
 		}
-		if n := len(o.HTTP.Script); n > 0 {
-			warns = append(warns, Warning{Source: src, Msg: fmt.Sprintf("%d script rule(s) ignored, JavaScript is not supported yet", n)})
+		for _, sc := range o.HTTP.Script {
+			code, err := resolveScript(loader, o, sc.Name)
+			if err != nil {
+				warns = append(warns, Warning{Source: src, Msg: fmt.Sprintf("script %q skipped: %v", sc.Name, err)})
+				continue
+			}
+			rule, err := rewrite.NewScriptRule(sc.Match, sc.Name, sc.Type, src, sc.RequireBody, sc.BinaryMode, sc.Timeout, sc.MaxSize, sc.Argument, code)
+			if err != nil {
+				warns = append(warns, Warning{Source: src, Msg: fmt.Sprintf("script %q skipped: %v", sc.Name, err)})
+				continue
+			}
+			e.Scripts = append(e.Scripts, rule)
 		}
 	}
 	return e, warns
+}
+
+func resolveScript(loader *script.Loader, o *Override, name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("missing script name")
+	}
+	p, ok := o.ScriptProviders[name]
+	if !ok {
+		return "", fmt.Errorf("no script-providers entry")
+	}
+	if loader == nil {
+		if strings.TrimSpace(p.Payload) != "" {
+			return p.Payload, nil
+		}
+		if p.Path != "" {
+			b, err := os.ReadFile(p.Path)
+			if err != nil {
+				return "", err
+			}
+			return string(b), nil
+		}
+		return "", fmt.Errorf("script loader not configured")
+	}
+	return loader.Load(name, p)
 }
 
 func dedupe(in []string) []string {

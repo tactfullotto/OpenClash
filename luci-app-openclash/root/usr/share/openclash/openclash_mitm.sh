@@ -135,6 +135,7 @@ cmd_run() {
    skip_verify=$(uci_get_config "mitm_skip_cert_verify" || echo 0)
    local cert_listen=""
    [ "$cert_port" != "0" ] && cert_listen="$(mitm_lan_ip):${cert_port}"
+   mkdir -p "${MITM_DIR}/scripts" "${MITM_DIR}/store"
    exec "$MITM_BIN" run \
       --listen "127.0.0.1:$(uci_get_config "mitm_port" || echo 7899)" \
       --upstream "127.0.0.1:$(uci_get_config "mitm_out_port" || echo 7898)" \
@@ -142,6 +143,8 @@ cmd_run() {
       --ca-cert "$MITM_CA_CERT" --ca-key "$MITM_CA_KEY" \
       --max-body-size "$((max_body * 1024 * 1024))" \
       --skip-server-cert-verify="$([ "$skip_verify" = "1" ] && echo true || echo false)" \
+      --script-dir "${MITM_DIR}/scripts" \
+      --store-dir "${MITM_DIR}/store" \
       --log-file "$MITM_LOG" \
       --log-level "$(uci_get_config "mitm_log_level" || echo info)" \
       "${OVERRIDE_ARGS[@]}"

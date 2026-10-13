@@ -3844,7 +3844,7 @@ LAN 设备 ──透明代理──▶ mihomo
       ▼
 openclash_mitm (127.0.0.1:7899)
    ├─ 用本地根证书签发叶子证书，终止 TLS
-   ├─ url-rewrite / header-rewrite / body-rewrite
+   ├─ url-rewrite / header-rewrite / body-rewrite / http.script (goja)
    └─ HTTP CONNECT ──▶ mihomo 监听器 openclash-mitm-out (127.0.0.1:mitm_out_port, mixed)
                            │ 重新匹配订阅规则（IN-NAME 排除避免回环）
                            ▼
@@ -3868,7 +3868,7 @@ openclash_mitm (127.0.0.1:7899)
 | `http.url-rewrite` | ✅ `reject` `reject-200` `reject-img` `reject-dict` `reject-array` `302` `307` `transparent` |
 | `http.header-rewrite` | ✅ `request-/response-` + `add` `del` `replace` `replace-regex` |
 | `http.body-rewrite` | ✅ `request-/response-` + `replace-regex`（多组）、`jq`；自动解压 gzip/deflate |
-| `http.script` | ❌ 暂不支持 JavaScript，解析后忽略并在日志中警告 |
+| `http.script` | ✅ goja 执行 Stash 脚本；`$request`/`$response`/`$done`/`$persistentStore`/`$httpClient`/`$notification`；`script-providers` 自动下载缓存到 `/etc/openclash/mitm/scripts/`；`$persistentStore` 落盘 `/etc/openclash/mitm/store/`。`$done()` 无参=中断，`$done({})`=不改动。不支持完整 WebKit DOM/`fetch`/`crypto.subtle` |
 | `rules` / `rule-providers` | ✅ 合并进 mihomo 配置（见 9.1） |
 
 > 正则为 JavaScript 风格（支持前后断言），语法参考 [Stash Wiki](https://stash.wiki/)。

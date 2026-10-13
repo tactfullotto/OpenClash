@@ -257,12 +257,76 @@ func (r *URLRule) Rewrite(url string) string {
 	return out
 }
 
+// ScriptRule is a compiled http.script entry with its JavaScript source loaded.
+type ScriptRule struct {
+	Source      string // override display name
+	Name        string
+	Phase       Phase
+	pattern     *regexp2.Regexp
+	RequireBody bool
+	BinaryMode  bool
+	Timeout     time.Duration
+	MaxSize     int64
+	Argument    any
+	Code        string
+}
+
+// Match reports whether the script applies to url.
+func (r *ScriptRule) Match(url string) bool { return matches(r.pattern, url) }
+
 // Engine is a compiled, immutable set of rewrite rules.
 type Engine struct {
-	Hosts  *HostMatcher
-	URL    []*URLRule
-	Header []*HeaderRule
-	Body   []*BodyRule
+	Hosts   *HostMatcher
+	URL     []*URLRule
+	Header  []*HeaderRule
+	Body    []*BodyRule
+	Scripts []*ScriptRule
+}
+
+// MatchScripts returns every script of the phase that matches url, in order.
+func (e *Engine) MatchScripts(phase Phase, url string) []*ScriptRule {
+	var out []*ScriptRule
+	for _, r := range e.Scripts {
+		if r.Phase == phase && r.Match(url) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// HasScripts reports whether any script of the phase matches url.
+func (e *Engine) HasScripts(phase Phase, url string) bool {
+	return len(e.MatchScripts(phase, url)) > 0
+}
+
+// NewScriptRule compiles a script match pattern.
+func NewScriptRule(match, name, typ, source string, requireBody, binaryMode bool, timeoutSec, maxSize int, argument any, code string) (*ScriptRule, error) {
+	phase := PhaseRequest
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "", "request":
+		phase = PhaseRequest
+	case "response":
+		phase = PhaseResponse
+	default:
+		return nil, fmt.Errorf("unsupported script type %q", typ)
+	}
+	re, err := compileRegex(match)
+	if err != nil {
+		return nil, fmt.Errorf("invalid script match %q: %w", match, err)
+	}
+	to := time.Duration(timeoutSec) * time.Second
+	if to <= 0 {
+		to = 10 * time.Second
+	}
+	ms := int64(maxSize)
+	if ms < 0 {
+		ms = 0
+	}
+	return &ScriptRule{
+		Source: source, Name: name, Phase: phase, pattern: re,
+		RequireBody: requireBody, BinaryMode: binaryMode,
+		Timeout: to, MaxSize: ms, Argument: argument, Code: code,
+	}, nil
 }
 
 // MatchURL returns the first url-rewrite rule matching url.

@@ -22,6 +22,7 @@ import (
 
 	"github.com/vernesong/OpenClash/openclash-mitm/internal/ca"
 	"github.com/vernesong/OpenClash/openclash-mitm/internal/rewrite"
+	"github.com/vernesong/OpenClash/openclash-mitm/internal/script"
 )
 
 // Config controls the proxy server.
@@ -55,6 +56,7 @@ type Server struct {
 	ca        *ca.Authority
 	log       *slog.Logger
 	engine    atomic.Pointer[rewrite.Engine]
+	scripts   *script.Runner
 	transport *http.Transport
 	dialer    net.Dialer
 
@@ -81,11 +83,12 @@ const (
 )
 
 // New creates a proxy server using the given CA and rewrite engine.
-func New(cfg Config, authority *ca.Authority, engine *rewrite.Engine, log *slog.Logger) *Server {
+// scripts may be nil when no JavaScript rules are needed.
+func New(cfg Config, authority *ca.Authority, engine *rewrite.Engine, scripts *script.Runner, log *slog.Logger) *Server {
 	if cfg.MaxBodySize <= 0 {
 		cfg.MaxBodySize = 4 << 20
 	}
-	s := &Server{cfg: cfg, ca: authority, log: log, aborts: map[string]*abortCount{}}
+	s := &Server{cfg: cfg, ca: authority, log: log, scripts: scripts, aborts: map[string]*abortCount{}}
 	s.dialer = net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
 	s.engine.Store(engine)
 	s.transport = &http.Transport{
@@ -330,6 +333,19 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request) {
 			s.log.Info("url-rewrite", "action", rule.Action, "url", origURL, "target", target, "source", rule.Source)
 		}
 	}
+
+	if s.scripts != nil && eng.HasScripts(rewrite.PhaseRequest, origURL) {
+		outcome := s.runRequestScripts(w, r, eng, &origURL, &target)
+		switch outcome {
+		case scriptAbort:
+			w.Header().Set("Content-Length", "0")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		case scriptRespond:
+			return
+		}
+	}
+
 	targetURL, err := parseURL(target)
 	if err != nil {
 		http.Error(w, "bad rewrite target: "+err.Error(), http.StatusBadGateway)
@@ -343,12 +359,14 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request) {
 		s.rewriteRequestBody(r, eng, origURL)
 	}
 	rewriteRespBody := eng.HasBodyRules(rewrite.PhaseResponse, origURL)
+	runRespScripts := s.scripts != nil && eng.HasScripts(rewrite.PhaseResponse, origURL)
+	needRespBody := rewriteRespBody || runRespScripts
 
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = targetURL
 			pr.Out.Host = targetURL.Host
-			if rewriteRespBody {
+			if needRespBody {
 				// Let the transport negotiate gzip and decode it transparently.
 				pr.Out.Header.Del("Accept-Encoding")
 			}
@@ -362,6 +380,16 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request) {
 			if rewriteRespBody {
 				s.rewriteResponseBody(resp, eng, origURL)
 			}
+			if runRespScripts {
+				if aborted := s.runResponseScripts(resp, r, eng, origURL); aborted {
+					resp.Body = io.NopCloser(bytes.NewReader(nil))
+					resp.StatusCode = http.StatusForbidden
+					resp.ContentLength = 0
+					resp.Header.Set("Content-Length", "0")
+					resp.Header.Del("Content-Encoding")
+					resp.Header.Del("Transfer-Encoding")
+				}
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -373,6 +401,225 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request) {
 		ErrorLog: slog.NewLogLogger(s.log.Handler(), slog.LevelDebug),
 	}
 	rp.ServeHTTP(w, r)
+}
+
+type scriptOutcome int
+
+const (
+	scriptContinue scriptOutcome = iota
+	scriptAbort
+	scriptRespond
+)
+
+func (s *Server) runRequestScripts(w http.ResponseWriter, r *http.Request, eng *rewrite.Engine, origURL, target *string) scriptOutcome {
+	rules := eng.MatchScripts(rewrite.PhaseRequest, *origURL)
+	if len(rules) == 0 {
+		return scriptContinue
+	}
+	var body []byte
+	bodyLoaded := false
+	ensureBody := func(rule *rewrite.ScriptRule) ([]byte, bool) {
+		if !rule.RequireBody {
+			return nil, true
+		}
+		if bodyLoaded {
+			return body, true
+		}
+		bodyLoaded = true
+		if r.Body == nil || r.Body == http.NoBody {
+			body = nil
+			return body, true
+		}
+		limit := s.cfg.MaxBodySize
+		if rule.MaxSize > 0 && rule.MaxSize < limit {
+			limit = rule.MaxSize
+		}
+		b, ok, err := readLimited(r.Body, limit)
+		if err != nil {
+			r.Body = io.NopCloser(bytes.NewReader(b))
+			s.log.Warn("script skipped, read request body failed", "name", rule.Name, "err", err)
+			return nil, false
+		}
+		if !ok {
+			r.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(b), r.Body), r.Body}
+			s.log.Warn("script skipped, request body too large", "name", rule.Name, "limit", limit)
+			return nil, false
+		}
+		r.Body.Close()
+		body = b
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+		r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		return body, true
+	}
+
+	for _, rule := range rules {
+		b, ok := ensureBody(rule)
+		if !ok {
+			continue
+		}
+		in := script.Input{URL: *origURL, Method: r.Method, Headers: r.Header.Clone()}
+		if rule.RequireBody {
+			in.Body = b
+		}
+		res, err := s.scripts.Run(rule, in)
+		if err != nil {
+			s.log.Warn("script failed", "name", rule.Name, "phase", "request", "err", err)
+			continue
+		}
+		switch res.Kind {
+		case script.ResultAbort:
+			s.log.Info("script", "phase", "request", "name", rule.Name, "action", "abort")
+			return scriptAbort
+		case script.ResultNoop:
+			continue
+		case script.ResultMutate:
+			s.log.Info("script", "phase", "request", "name", rule.Name, "action", "mutate")
+			if res.Response != nil {
+				writeScriptResponse(w, res.Response)
+				return scriptRespond
+			}
+			if res.URL != "" {
+				*origURL = res.URL
+				*target = res.URL
+			}
+			if res.Headers != nil {
+				r.Header = res.Headers
+			}
+			if res.BodySet {
+				body = res.Body
+				bodyLoaded = true
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				r.ContentLength = int64(len(body))
+				r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			}
+		}
+	}
+	return scriptContinue
+}
+
+func (s *Server) runResponseScripts(resp *http.Response, req *http.Request, eng *rewrite.Engine, url string) (aborted bool) {
+	rules := eng.MatchScripts(rewrite.PhaseResponse, url)
+	if len(rules) == 0 {
+		return false
+	}
+	var body []byte
+	bodyLoaded := false
+	ensureBody := func(rule *rewrite.ScriptRule) ([]byte, bool) {
+		if !rule.RequireBody {
+			return nil, true
+		}
+		if bodyLoaded {
+			return body, true
+		}
+		bodyLoaded = true
+		if resp.Body == nil || resp.Body == http.NoBody || resp.StatusCode == http.StatusNoContent ||
+			resp.StatusCode == http.StatusNotModified || req.Method == http.MethodHead {
+			body = nil
+			return body, true
+		}
+		limit := s.cfg.MaxBodySize
+		if rule.MaxSize > 0 && rule.MaxSize < limit {
+			limit = rule.MaxSize
+		}
+		raw, ok, err := readLimited(resp.Body, limit)
+		if err != nil {
+			resp.Body = io.NopCloser(bytes.NewReader(raw))
+			s.log.Warn("script skipped, read response body failed", "name", rule.Name, "err", err)
+			return nil, false
+		}
+		if !ok {
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(raw), resp.Body), resp.Body}
+			s.log.Warn("script skipped, response body too large", "name", rule.Name, "limit", limit)
+			return nil, false
+		}
+		resp.Body.Close()
+		decoded, encoding, err := decodeBody(raw, resp.Header.Get("Content-Encoding"))
+		if err != nil {
+			resp.Body = io.NopCloser(bytes.NewReader(raw))
+			s.log.Warn("script skipped, decode response failed", "name", rule.Name, "err", err)
+			return nil, false
+		}
+		if encoding != "" {
+			resp.Header.Del("Content-Encoding")
+		}
+		body = decoded
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		resp.Header.Del("Transfer-Encoding")
+		return body, true
+	}
+
+	for _, rule := range rules {
+		b, ok := ensureBody(rule)
+		if !ok {
+			continue
+		}
+		in := script.Input{
+			URL: url, Method: req.Method, Headers: req.Header.Clone(),
+			HasResponse: true, Status: resp.StatusCode, RespHeaders: resp.Header.Clone(),
+		}
+		if rule.RequireBody {
+			in.RespBody = b
+		}
+		res, err := s.scripts.Run(rule, in)
+		if err != nil {
+			s.log.Warn("script failed", "name", rule.Name, "phase", "response", "err", err)
+			continue
+		}
+		switch res.Kind {
+		case script.ResultAbort:
+			s.log.Info("script", "phase", "response", "name", rule.Name, "action", "abort")
+			return true
+		case script.ResultNoop:
+			continue
+		case script.ResultMutate:
+			s.log.Info("script", "phase", "response", "name", rule.Name, "action", "mutate")
+			if res.Status > 0 {
+				resp.StatusCode = res.Status
+				resp.Status = fmt.Sprintf("%d %s", res.Status, http.StatusText(res.Status))
+			}
+			if res.Headers != nil {
+				resp.Header = res.Headers
+			}
+			if res.BodySet {
+				body = res.Body
+				bodyLoaded = true
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+				resp.ContentLength = int64(len(body))
+				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+				resp.Header.Del("Content-Encoding")
+				resp.Header.Del("Transfer-Encoding")
+			}
+		}
+	}
+	return false
+}
+
+func writeScriptResponse(w http.ResponseWriter, dr *script.DoneResponse) {
+	if dr == nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	status := dr.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	for k, vs := range dr.Headers {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(dr.Body)))
+	w.WriteHeader(status)
+	_, _ = w.Write(dr.Body)
 }
 
 func (s *Server) rewriteRequestBody(r *http.Request, eng *rewrite.Engine, url string) {

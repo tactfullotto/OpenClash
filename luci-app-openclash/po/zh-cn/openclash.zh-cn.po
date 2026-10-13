@@ -4366,8 +4366,8 @@ msgstr "HTTP(S) 改写"
 msgid "Decrypt the HTTPS traffic of selected hosts with a local root certificate and rewrite it with Stash override (.stoverride) rules, the rewritten traffic still follows the rules of the current config."
 msgstr "使用本地根证书解密指定主机的 HTTPS 流量，并按 Stash 覆写 (.stoverride) 规则改写，改写后的流量仍按当前配置文件的规则分流。"
 
-msgid "JavaScript (http.script) is not supported yet, those rules are ignored."
-msgstr "暂不支持 JavaScript 脚本 (http.script)，此类规则会被忽略。"
+msgid "JavaScript http.script is supported (Stash APIs: $request, $response, $done, $persistentStore, $httpClient, $notification). script-providers are cached under /etc/openclash/mitm/scripts/"
+msgstr "已支持 JavaScript http.script（Stash API：$request、$response、$done、$persistentStore、$httpClient、$notification）。script-providers 缓存于 /etc/openclash/mitm/scripts/"
 
 msgid "Root Certificate"
 msgstr "根证书"

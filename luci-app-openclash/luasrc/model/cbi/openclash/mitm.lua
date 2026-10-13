@@ -28,7 +28,7 @@ local cert_port = fs.uci_get_config("config", "mitm_cert_port") or "7900"
 m = Map("openclash", translate("HTTP(S) Rewrite"))
 m.pageaction = false
 m.description = translate("Decrypt the HTTPS traffic of selected hosts with a local root certificate and rewrite it with Stash override (.stoverride) rules, the rewritten traffic still follows the rules of the current config.")..
-"<br/>"..font_red..bold_on..translate("JavaScript (http.script) is not supported yet, those rules are ignored.")..bold_off..font_off
+"<br/>"..translate("JavaScript http.script is supported (Stash APIs: $request, $response, $done, $persistentStore, $httpClient, $notification). script-providers are cached under /etc/openclash/mitm/scripts/")
 
 s = m:section(TypedSection, "openclash")
 s.anonymous = true

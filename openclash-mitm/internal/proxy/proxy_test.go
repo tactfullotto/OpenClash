@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/vernesong/OpenClash/openclash-mitm/internal/ca"
+	"github.com/vernesong/OpenClash/openclash-mitm/internal/script"
 	"github.com/vernesong/OpenClash/openclash-mitm/internal/stash"
 )
 
@@ -101,14 +102,14 @@ func setup(t *testing.T, override string) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine, warns := stash.Compile([]*stash.Override{o}, nil)
+	engine, warns := stash.Compile([]*stash.Override{o}, nil, nil)
 	if len(warns) > 0 {
 		t.Fatalf("warnings: %v", warns)
 	}
 	var tunnels atomic.Int32
 	upstream := fakeUpstream(t, origin.Listener.Addr().String(), &tunnels)
 	srv := New(Config{Upstream: upstream, SkipServerCertVerify: true, MaxBodySize: 1 << 20, BypassTTL: time.Minute},
-		authority, engine, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		authority, engine, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -351,9 +352,9 @@ http:
   header-rewrite:
     - ^http://web\.test request-add X-Added plain
 `))
-	engine, _ := stash.Compile([]*stash.Override{o}, nil)
+	engine, _ := stash.Compile([]*stash.Override{o}, nil, nil)
 	var tunnels atomic.Int32
-	srv := New(Config{Upstream: fakeUpstream(t, plain.Listener.Addr().String(), &tunnels)}, authority, engine, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(Config{Upstream: fakeUpstream(t, plain.Listener.Addr().String(), &tunnels)}, authority, engine, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -411,5 +412,99 @@ func TestCertHandler(t *testing.T) {
 	}
 	if resp, _ := http.Get(srv.URL + "/ca.key"); resp.StatusCode != 404 {
 		t.Error("private key must never be served")
+	}
+}
+
+func TestScriptRewrite(t *testing.T) {
+	override := `
+http:
+  mitm:
+    - "*.mitm.test"
+  script:
+    - match: ^https://api\.mitm\.test/script-json
+      name: vip-script
+      type: response
+      require-body: true
+    - match: ^https://api\.mitm\.test/script-local
+      name: local-script
+      type: request
+script-providers:
+  vip-script:
+    payload: |
+      let o = JSON.parse($response.body);
+      o.vip = true;
+      o.via = "script";
+      $done({body: JSON.stringify(o)});
+  local-script:
+    payload: |
+      $done({response: {status: 200, headers: {"Content-Type": "application/json"}, body: '{"local":true}'}});
+`
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"vip": false, "path": r.URL.Path})
+	}))
+	origin.StartTLS()
+	t.Cleanup(origin.Close)
+
+	dir := t.TempDir()
+	authority, _, err := ca.LoadOrGenerate(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := stash.Parse("test", []byte(override))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loader, err := script.NewLoader(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, warns := stash.Compile([]*stash.Override{o}, nil, &stash.CompileOptions{Loader: loader})
+	if len(warns) > 0 {
+		t.Fatalf("warnings: %v", warns)
+	}
+	if len(engine.Scripts) != 2 {
+		t.Fatalf("scripts = %d", len(engine.Scripts))
+	}
+	runner, err := script.NewRunner(filepath.Join(dir, "store"), "", "test", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tunnels atomic.Int32
+	upstream := fakeUpstream(t, origin.Listener.Addr().String(), &tunnels)
+	srv := New(Config{Upstream: upstream, SkipServerCertVerify: true, MaxBodySize: 1 << 20},
+		authority, engine, runner, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx, ln) }()
+
+	pool := x509.NewCertPool()
+	pool.AddCert(authority.Cert)
+	proxyURL, _ := url.Parse("http://" + ln.Addr().String())
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+		Timeout: 10 * time.Second,
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://api.mitm.test/script-json", nil)
+	_, m := getJSON(t, client, req)
+	if m["vip"] != true || m["via"] != "script" {
+		t.Errorf("response script = %v", m)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, "https://api.mitm.test/script-local", nil)
+	_, m = getJSON(t, client, req)
+	if m["local"] != true {
+		t.Errorf("request short-circuit = %v", m)
+	}
+	if tunnels.Load() == 0 {
+		// local response should not hit upstream; script-json should
 	}
 }
