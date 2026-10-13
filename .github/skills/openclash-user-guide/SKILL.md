@@ -3868,10 +3868,16 @@ openclash_mitm (127.0.0.1:7899)
 | `http.url-rewrite` | ✅ `reject` `reject-200` `reject-img` `reject-dict` `reject-array` `302` `307` `transparent` |
 | `http.header-rewrite` | ✅ `request-/response-` + `add` `del` `replace` `replace-regex` |
 | `http.body-rewrite` | ✅ `request-/response-` + `replace-regex`（多组）、`jq`；自动解压 gzip/deflate |
-| `http.script` | ✅ goja 执行 Stash 脚本；`$request`/`$response`/`$done`/`$persistentStore`/`$httpClient`/`$notification`；`script-providers` 自动下载缓存到 `/etc/openclash/mitm/scripts/`；`$persistentStore` 落盘 `/etc/openclash/mitm/store/`。`$done()` 无参=中断，`$done({})`=不改动。不支持完整 WebKit DOM/`fetch`/`crypto.subtle` |
+| `http.script` | ✅ goja 执行 Stash 脚本；`$request`/`$response`/`$done`/`$persistentStore`/`$httpClient`/`$notification`；内置 `URL`/`URLSearchParams`/`TextEncoder`/`TextDecoder`/`btoa`/`atob` 等最小 polyfill；`script-providers` 自动下载缓存到 `/etc/openclash/mitm/scripts/`；`$persistentStore` 落盘 `/etc/openclash/mitm/store/`。`$done()` 无参=中断，`$done({})`=不改动。不支持完整 WebKit DOM/`fetch`/`crypto.subtle` |
 | `rules` / `rule-providers` | ✅ 合并进 mihomo 配置（见 9.1） |
 
 > 正则为 JavaScript 风格（支持前后断言），语法参考 [Stash Wiki](https://stash.wiki/)。
+
+**`$httpClient` 与重定向**：默认跟随 HTTP 301/302（与 Surge/Stash 一致）。GitHub `github.com/.../raw/...` 会跳转到 `raw.githubusercontent.com`；若不跟随，BoxJS 等脚本订阅导入会拿到空/HTML 正文并提示「格式错误」。需要原始响应时传 `auto-redirect: false`。
+
+**hosts 注入策略**：仅对覆写中的 `force-http-engine` 域名写入 Clash `hosts`（钉到 Fake-IP 段，如 `198.18.0.2`），用于 boxjs.com 这类本地劫持。普通 `mitm` 域名不钉 hosts，以便 WeatherKit 等脚本解密后仍能访问真实源站。
+
+**reject 与脚本顺序**：`url-rewrite` 的 `reject*` 在请求脚本跑完后再执行，这样可先由 `http.script` 本地应答，再阻断回落到公网原站。
 
 ## 9.3 UCI 选项
 
@@ -3915,6 +3921,12 @@ tail -f /tmp/openclash_mitm.log                         # 引擎日志
 ```
 
 **排查要点**: 未解密 → 确认设备在 `mitm_src` 内、域名在 `mitm` 列表、使用 Fake-IP 或开启 Sniffer（规则需要域名）、日志中是否出现「client rejected MITM certificate」；App 无法联网 → 该 App 可能固定证书，从 `mitm` 中移除其域名。
+
+### BoxJS 订阅「格式错误」
+
+- BoxJS「应用订阅」地址必须是含 `id` / `apps` 数组的 **BoxJS JSON**（如 `https://raw.githubusercontent.com/chavyleung/scripts/master/box/chavy.boxjs.json`），不是 `.stoverride` / `.sgmodule` / Loon plugin。
+- 经 MITM 脚本拉取 GitHub raw 链接时需能跟随重定向（见上节 `$httpClient`）；引擎版本过旧不跟随重定向时也会表现为格式错误。
+- 仓库迁址或 404 的旧订阅（如部分 `VirgilClyne/iRingo` 路径）同样会解析失败。
 
 ---
 

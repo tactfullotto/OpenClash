@@ -567,7 +567,7 @@ func installPolyfills(vm *goja.Runtime) {
 		return vm.ToValue(base64.StdEncoding.EncodeToString([]byte(call.Arguments[0].String())))
 	})
 
-	// TextEncoder / TextDecoder minimal polyfill
+	// TextEncoder / TextDecoder / URL / URLSearchParams minimal polyfills
 	_, _ = vm.RunString(`
 (function(g) {
   if (typeof g.TextEncoder === 'undefined') {
@@ -596,6 +596,115 @@ func installPolyfills(vm *goja.Runtime) {
       for (var i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
       try { return decodeURIComponent(escape(str)); } catch (e) { return str; }
     };
+  }
+  if (typeof g.URLSearchParams === 'undefined') {
+    g.URLSearchParams = function URLSearchParams(init) {
+      this._map = {};
+      var self = this;
+      function appendPair(k, v) {
+        k = String(k); v = String(v);
+        if (!Object.prototype.hasOwnProperty.call(self._map, k)) self._map[k] = [];
+        self._map[k].push(v);
+      }
+      if (typeof init === 'string') {
+        var q = init.charAt(0) === '?' ? init.slice(1) : init;
+        if (q) q.split('&').forEach(function(pair) {
+          if (!pair) return;
+          var i = pair.indexOf('=');
+          var k = i < 0 ? pair : pair.slice(0, i);
+          var v = i < 0 ? '' : pair.slice(i + 1);
+          try { k = decodeURIComponent(k.replace(/\+/g, ' ')); } catch (e) {}
+          try { v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e) {}
+          appendPair(k, v);
+        });
+      } else if (init && typeof init === 'object') {
+        Object.keys(init).forEach(function(k) { appendPair(k, init[k]); });
+      }
+    };
+    g.URLSearchParams.prototype.get = function(k) {
+      var a = this._map[String(k)]; return a && a.length ? a[0] : null;
+    };
+    g.URLSearchParams.prototype.getAll = function(k) { return (this._map[String(k)] || []).slice(); };
+    g.URLSearchParams.prototype.has = function(k) { return Object.prototype.hasOwnProperty.call(this._map, String(k)); };
+    g.URLSearchParams.prototype.set = function(k, v) { this._map[String(k)] = [String(v)]; };
+    g.URLSearchParams.prototype.append = function(k, v) {
+      k = String(k); v = String(v);
+      if (!Object.prototype.hasOwnProperty.call(this._map, k)) this._map[k] = [];
+      this._map[k].push(v);
+    };
+    g.URLSearchParams.prototype.delete = function(k) { delete this._map[String(k)]; };
+    g.URLSearchParams.prototype.toString = function() {
+      var out = [];
+      Object.keys(this._map).forEach(function(k) {
+        this._map[k].forEach(function(v) {
+          out.push(encodeURIComponent(k) + '=' + encodeURIComponent(v));
+        });
+      }, this);
+      return out.join('&');
+    };
+  }
+  if (typeof g.URL === 'undefined') {
+    g.URL = function URL(url, base) {
+      url = String(url || '');
+      if (base) {
+        var b = new g.URL(String(base));
+        if (url.charAt(0) === '/') url = b.protocol + '//' + b.host + url;
+        else if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) {
+          var path = b.pathname.replace(/\/[^\/]*$/, '/');
+          url = b.protocol + '//' + b.host + path + url;
+        }
+      }
+      var m = String(url).match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)(\/\/)?([^\/?#]*)(\/[^?#]*)?(\?[^#]*)?(#.*)?$/);
+      if (!m) throw new TypeError('Invalid URL: ' + url);
+      this.protocol = m[1];
+      this.username = '';
+      this.password = '';
+      var authHost = m[3] || '';
+      var at = authHost.lastIndexOf('@');
+      if (at >= 0) {
+        var auth = authHost.slice(0, at);
+        authHost = authHost.slice(at + 1);
+        var colon = auth.indexOf(':');
+        if (colon >= 0) { this.username = auth.slice(0, colon); this.password = auth.slice(colon + 1); }
+        else this.username = auth;
+      }
+      this.host = authHost;
+      var h = authHost.match(/^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/);
+      this.hostname = h ? h[1] : authHost;
+      this.port = h && h[2] ? h[2] : '';
+      this.pathname = m[4] || '/';
+      this.search = m[5] || '';
+      this.hash = m[6] || '';
+      this.origin = this.protocol + '//' + this.host;
+      var self = this;
+      var params = new g.URLSearchParams(this.search);
+      Object.defineProperty(this, 'searchParams', {
+        get: function() { return params; }
+      });
+      var syncSearch = function() {
+        var q = params.toString();
+        self.search = q ? ('?' + q) : '';
+      };
+      var _set = params.set.bind(params);
+      var _append = params.append.bind(params);
+      var _del = params.delete.bind(params);
+      params.set = function(k, v) { _set(k, v); syncSearch(); };
+      params.append = function(k, v) { _append(k, v); syncSearch(); };
+      params.delete = function(k) { _del(k); syncSearch(); };
+    };
+    g.URL.prototype.toString = function() {
+      return this.protocol + '//' + this.host + this.pathname + this.search + this.hash;
+    };
+    g.URL.prototype.toJSON = function() { return this.toString(); };
+    Object.defineProperty(g.URL.prototype, 'href', {
+      get: function() { return this.toString(); },
+      set: function(v) {
+        var u = new g.URL(String(v));
+        this.protocol = u.protocol; this.host = u.host; this.hostname = u.hostname;
+        this.port = u.port; this.pathname = u.pathname; this.search = u.search;
+        this.hash = u.hash; this.origin = u.origin; this.username = u.username; this.password = u.password;
+      }
+    });
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 `)

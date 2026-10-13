@@ -312,12 +312,13 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request) {
 	eng := s.engine.Load()
 
 	target := origURL
+	// Defer reject until after request scripts so hijack rules like BoxJS can
+	// answer locally, then still block fall-through to the real upstream site.
+	var deferredReject *rewrite.URLRule
 	if rule := eng.MatchURL(origURL); rule != nil {
 		switch {
 		case rule.Action.IsReject():
-			s.log.Info("url-rewrite", "action", rule.Action, "url", origURL, "source", rule.Source)
-			writeReject(w, rule.Action)
-			return
+			deferredReject = rule
 		case rule.Action == rewrite.Action302 || rule.Action == rewrite.Action307:
 			loc := rule.Rewrite(origURL)
 			s.log.Info("url-rewrite", "action", rule.Action, "url", origURL, "location", loc, "source", rule.Source)
@@ -344,6 +345,12 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request) {
 		case scriptRespond:
 			return
 		}
+	}
+
+	if deferredReject != nil {
+		s.log.Info("url-rewrite", "action", deferredReject.Action, "url", origURL, "source", deferredReject.Source)
+		writeReject(w, deferredReject.Action)
+		return
 	}
 
 	targetURL, err := parseURL(target)

@@ -17,11 +17,32 @@
 * [Wiki](https://github.com/vernesong/OpenClash/blob/dev/.github/skills/openclash-user-guide/SKILL.md)
 
 
+HTTP(S) 数据覆写 (MITM)
+---
+
+
+* 菜单：`服务 → OpenClash → HTTP(S) 数据覆写`
+* 独立引擎：`openclash-mitm/`（部署为 `/etc/openclash/core/openclash_mitm`），兼容 Stash `.stoverride`（`url-rewrite` / `header-rewrite` / `body-rewrite` / `http.script`）
+* 脚本运行时（goja）提供 `$httpClient`、`$persistentStore`、`URL` / `URLSearchParams` 等；`$httpClient` **默认跟随重定向**（与 Surge/Stash 一致，可用 `auto-redirect: false` 关闭）
+* Clash `hosts` 仅注入 `force-http-engine` 域名（如 boxjs.com），避免 WeatherKit 等需回源的覆写被错误钉死
+* `reject` 类 url-rewrite 在请求脚本执行后再生效，便于 BoxJS 等本地劫持规则先应答
+* 说明与排障见手册 [第九部分：HTTP(S) 数据覆写](https://github.com/vernesong/OpenClash/blob/dev/.github/skills/openclash-user-guide/SKILL.md)
+
+交叉编译 MITM 引擎示例：
+
+```bash
+cd openclash-mitm
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o openclash_mitm .
+# 拷贝到路由器：/etc/openclash/core/openclash_mitm && chmod +x
+```
+
+
 下载地址
 ---
 
 
 * IPK & APK [前往下载](https://github.com/vernesong/OpenClash/releases)
+* MITM 引擎随核心发布目录分发（`core/<branch>/mitm/`，见 Releases / CI）
 
 
 依赖

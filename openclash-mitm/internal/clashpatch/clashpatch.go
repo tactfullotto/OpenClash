@@ -144,6 +144,11 @@ func Patch(config []byte, overrides []*stash.Override, opts Options) ([]byte, *R
 	res.Warnings = append(res.Warnings, hostWarns...)
 	res.Hosts = len(hostExprs)
 	if len(hostExprs) > 0 {
+		// Only pin force-http-engine hosts (e.g. boxjs.com). Pinning every
+		// MITM hostname breaks overrides like WeatherKit that must still dial
+		// the real origin after decryption.
+		injectDNSHosts(root, stash.ForceHTTPEngineHosts(overrides))
+
 		hosts := anyOf(hostExprs)
 		if opts.BlockQUIC {
 			q := and(simple("NETWORK", "UDP"), simple("DST-PORT", "443"), hosts)
@@ -374,6 +379,49 @@ func convertProvider(node yaml.Node) (*yaml.Node, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// mitmDNSHost is a fake-ip inside Clash's default fake-ip-range so hijacked
+// domains never resolve to a public website when DNS leaks.
+const mitmDNSHost = "198.18.0.2"
+
+// injectDNSHosts writes Clash hosts entries for MITM hostnames.
+func injectDNSHosts(root *yaml.Node, hostList []string) {
+	hosts := mapOf(root, "hosts")
+	seen := map[string]bool{}
+	for _, raw := range hostList {
+		key := clashHostKey(raw)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		if n := get(hosts, key); n != nil {
+			n.Kind, n.Tag, n.Value = yaml.ScalarNode, "!!str", mitmDNSHost
+			continue
+		}
+		hosts.Content = append(hosts.Content, scalar(key), scalar(mitmDNSHost))
+	}
+}
+
+func clashHostKey(raw string) string {
+	h := strings.TrimSpace(raw)
+	if h == "" || h == "*" || strings.HasPrefix(h, "-") {
+		return ""
+	}
+	if i := strings.LastIndex(h, ":"); i > 0 {
+		// strip :port when the suffix looks numeric
+		if port := h[i+1:]; port != "" && strings.Trim(port, "0123456789") == "" {
+			h = h[:i]
+		}
+	}
+	h = strings.TrimPrefix(h, "*.")
+	if h == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "*.") || strings.Contains(raw, "*.") {
+		return "+." + h
+	}
+	return h
 }
 
 func get(m *yaml.Node, key string) *yaml.Node {

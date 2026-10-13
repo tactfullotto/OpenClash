@@ -32,9 +32,10 @@ func newHTTPClient(upstream string, skipVerify bool) *HTTPClient {
 		TLSHandshakeTimeout: 10 * time.Second,
 		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 	}
-	hc.Client = &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
+	// Follow redirects by default (Surge/Stash $httpClient behavior). GitHub
+	// "raw" links 302 to raw.githubusercontent.com; without this, BoxJS
+	// subscription imports get an empty body and report format errors.
+	hc.Client = &http.Client{Transport: transport, Timeout: 30 * time.Second}
 	return hc
 }
 
@@ -93,12 +94,13 @@ func (h *HTTPClient) do(method string, opts any) (resp *httpResponse, errMsg str
 		httpReq.Header.Set(k, v)
 	}
 	client := h.Client
-	if req.Insecure || req.AutoRedirect {
+	if req.Insecure || !req.AutoRedirect {
 		tr := h.Client.Transport.(*http.Transport).Clone()
 		if req.Insecure {
 			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 		}
 		client = &http.Client{Transport: tr, Timeout: timeout}
+		// Default follows redirects (Stash-compatible). Opt out with auto-redirect: false.
 		if !req.AutoRedirect {
 			client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		}
@@ -128,7 +130,7 @@ func (h *HTTPClient) do(method string, opts any) (resp *httpResponse, errMsg str
 }
 
 func parseHTTPOpts(method string, opts any) (*httpRequest, error) {
-	req := &httpRequest{Method: strings.ToUpper(method), Timeout: 5 * time.Second}
+	req := &httpRequest{Method: strings.ToUpper(method), Timeout: 5 * time.Second, AutoRedirect: true}
 	switch v := opts.(type) {
 	case string:
 		req.URL = v
