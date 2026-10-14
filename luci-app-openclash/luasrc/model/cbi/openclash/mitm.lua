@@ -172,15 +172,10 @@ function custom.write(self, section, value)
 	return true
 end
 
----- Logs
-o = s:taboption("log", TextValue, "_mitm_log")
-o.rows = 30
-o.wrap = "off"
-o.readonly = true
-function o.cfgvalue(self, section)
-	return SYS.exec("tail -n 300 " .. MITM_LOG .. " 2>/dev/null") or ""
-end
-function o.write() return true end
+---- Logs (live view: open at bottom, clear / auto-refresh)
+o = s:taboption("log", DummyValue, "_mitm_log_view")
+o.rawhtml = true
+o.template = "openclash/mitm_log"
 
 -- [[ Override Subscriptions / Imports ]] --
 ov = m:section(TypedSection, "mitm_override", translate("Override Subscriptions"),

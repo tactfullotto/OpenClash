@@ -254,7 +254,7 @@ func (s *Server) decryptTLS(c *bufConn, info *connInfo) {
 		tlsConn.Close()
 		return
 	}
-	s.log.Debug("decrypting", "host", info.authority(), "alpn", tlsConn.ConnectionState().NegotiatedProtocol)
+	s.log.Info("decrypting", "host", info.authority(), "alpn", tlsConn.ConnectionState().NegotiatedProtocol)
 	s.meta.Store(net.Conn(tlsConn), info)
 	if err := s.intercL.push(tlsConn); err != nil {
 		tlsConn.Close()
@@ -310,6 +310,10 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request) {
 	info, _ := r.Context().Value(ctxKey{}).(*connInfo)
 	origURL := requestURL(r, info)
 	eng := s.engine.Load()
+	reqScripts := eng.MatchScripts(rewrite.PhaseRequest, origURL)
+	respScripts := eng.MatchScripts(rewrite.PhaseResponse, origURL)
+	s.log.Info("request", "method", r.Method, "url", origURL,
+		"req_scripts", len(reqScripts), "resp_scripts", len(respScripts))
 
 	target := origURL
 	// Defer reject until after request scripts so hijack rules like BoxJS can
@@ -397,6 +401,8 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request) {
 					resp.Header.Del("Transfer-Encoding")
 				}
 			}
+			s.log.Info("response", "status", resp.StatusCode, "url", origURL,
+				"body_rewrite", rewriteRespBody, "resp_scripts", len(respScripts))
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

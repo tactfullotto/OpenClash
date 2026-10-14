@@ -3928,6 +3928,12 @@ tail -f /tmp/openclash_mitm.log                         # 引擎日志
 - 经 MITM 脚本拉取 GitHub raw 链接时需能跟随重定向（见上节 `$httpClient`）；引擎版本过旧不跟随重定向时也会表现为格式错误。
 - 仓库迁址或 404 的旧订阅（如部分 `VirgilClyne/iRingo` 路径）同样会解析失败。
 
+### WeatherKit：BoxJS 只有 18 项 / 日志无响应
+
+- Stash 的 `iRingo.WeatherKit.stoverride` 对应 BoxJS 应用 **`iRingo.WeatherKit`（21 项）**，完整订阅为 `https://raw.githubusercontent.com/NSRingo/BoxJs/main/iRingo.BoxJs.json`。
+- `iRingo.17.BoxJs.json` 里是旧版 **`iRingo.Weather`（18 项）**，与 WeatherKit 覆写不是同一套设置，页面会少 3 项且脚本读不到 `WeatherKit` 配置。
+- 日志中完全没有 `weatherkit.apple.com` / `WeatherKit.*`：检查 HTTP(S) 数据覆写是否已启用并下载 `iRingo.WeatherKit.stoverride`（UCI `mitm_override` 需同时有 `name` + `url`），重启后 YAML 规则应出现 `DOMAIN,weatherkit.apple.com`→`OpenClash-MITM`。
+
 ---
 
 # 超出本文档范围的查询

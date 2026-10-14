@@ -178,3 +178,8 @@ ps.res.netease.com
 #geosite:category-games
 #geosite:apple-cn
 #geosite:google-cn
+# Apple WeatherKit (needed for MITM DOMAIN match under Fake-IP whitelist mode)
+weatherkit.apple.com
++.weatherkit.apple.com
+weather-data.apple.com
++.weather-data.apple.com

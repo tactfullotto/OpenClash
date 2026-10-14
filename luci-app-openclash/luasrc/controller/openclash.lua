@@ -73,6 +73,8 @@ function index()
 	entry({"admin", "services", "openclash", "mitm_ca"}, call("action_mitm_ca"))
 	entry({"admin", "services", "openclash", "mitm_upload_override"}, call("action_mitm_upload_override"))
 	entry({"admin", "services", "openclash", "mitm_add_override"}, call("action_mitm_add_override"))
+	entry({"admin", "services", "openclash", "mitm_refresh_log"}, call("action_mitm_refresh_log"))
+	entry({"admin", "services", "openclash", "mitm_del_log"}, call("action_mitm_del_log"))
 	entry({"admin", "services", "openclash", "config-subscribe"},cbi("openclash/config-subscribe"),_("Config Subscribe"), 60).leaf = true
 	entry({"admin", "services", "openclash", "servers"},cbi("openclash/servers"),nil).leaf = true
 	entry({"admin", "services", "openclash", "other-rules-edit"},cbi("openclash/other-rules-edit"), nil).leaf = true
@@ -2153,6 +2155,34 @@ local function mitm_mobileconfig()
 </dict>
 </plist>
 ]], b64, cn, u1, u1, u2, u2)
+end
+
+function action_mitm_refresh_log()
+	local logfile = "/tmp/openclash_mitm.log"
+	local log_len = tonumber(HTTP.formvalue("log_len")) or 0
+	local limit = 2000
+	HTTP.prepare_content("application/json")
+	if not fs.access(logfile) then
+		HTTP.write_json({ len = 0, update = true, log = "" })
+		return
+	end
+	local total_lines = tonumber(SYS.exec("wc -l < " .. logfile)) or 0
+	if total_lines == log_len and log_len > 0 then
+		HTTP.write_json({ len = total_lines, update = false, log = "" })
+		return
+	end
+	local body = SYS.exec(string.format("tail -n %d %s 2>/dev/null", limit, logfile)) or ""
+	HTTP.write_json({
+		len = total_lines,
+		update = true,
+		log = body:gsub("\n$", "")
+	})
+end
+
+function action_mitm_del_log()
+	SYS.exec(": > /tmp/openclash_mitm.log")
+	HTTP.prepare_content("application/json")
+	HTTP.write_json({ ok = true })
 end
 
 function action_mitm_ca()

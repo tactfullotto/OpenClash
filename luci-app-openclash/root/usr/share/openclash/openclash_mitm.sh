@@ -147,6 +147,11 @@ cmd_run() {
    local cert_listen=""
    [ "$cert_port" != "0" ] && cert_listen="$(mitm_lan_ip):${cert_port}"
    mkdir -p "${MITM_DIR}/scripts" "${MITM_DIR}/store"
+   # Align engine logs with system clock (OpenWrt often lacks /tmp/localtime for Go).
+   if [ -z "$TZ" ]; then
+      TZ=$(uci -q get system.@system[0].timezone 2>/dev/null || cat /etc/TZ 2>/dev/null || true)
+      [ -n "$TZ" ] && export TZ
+   fi
    exec "$MITM_BIN" run \
       --listen "127.0.0.1:$(uci_get_config "mitm_port" || echo 7899)" \
       --upstream "127.0.0.1:$(uci_get_config "mitm_out_port" || echo 7898)" \
@@ -262,17 +267,22 @@ cmd_status() {
       "$MITM_BIN" ca-info --cert "$MITM_CA_CERT" --key "$MITM_CA_KEY" 2>/dev/null
 }
 
+cmd_clear_log() {
+   : > "$MITM_LOG"
+}
+
 case "$1" in
    patch) cmd_patch "$2" ;;
    run) cmd_run ;;
    update) cmd_update ;;
    clean) cmd_clean ;;
+   clear-log) cmd_clear_log ;;
    regen-ca) cmd_regen_ca ;;
    core-download) cmd_core_download "$@" ;;
    status) cmd_status ;;
    enabled) mitm_enabled && [ -x "$MITM_BIN" ] ;;
    *)
-      echo "usage: $0 {patch <config>|run|update|clean|regen-ca|core-download [url]|status|enabled}"
+      echo "usage: $0 {patch <config>|run|update|clean|clear-log|regen-ca|core-download [url]|status|enabled}"
       exit 2
       ;;
 esac

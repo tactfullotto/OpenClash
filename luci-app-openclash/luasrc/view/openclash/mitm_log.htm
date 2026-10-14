@@ -1,0 +1,161 @@
+<%+cbi/valueheader%>
+<style type="text/css">
+.mitm-log-wrap { width: 100%; }
+.mitm-log-wrap textarea {
+	width: 100%;
+	min-height: 28em;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 12px;
+	line-height: 1.35;
+	white-space: pre;
+	overflow: auto;
+	resize: vertical;
+	box-sizing: border-box;
+}
+.mitm-log-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 8px;
+	align-items: center;
+}
+.mitm-log-actions .cbi-button { margin: 0; }
+.mitm-log-hint { opacity: 0.7; font-size: 12px; }
+</style>
+<div class="mitm-log-wrap">
+	<textarea id="mitm-log-view" class="cbi-input-textarea" rows="32" readonly="readonly" wrap="off"></textarea>
+	<div class="mitm-log-actions">
+		<input type="button" class="btn cbi-button cbi-button-reload" id="mitm-log-refresh" value="<%:Refresh%>" />
+		<input type="button" class="btn cbi-button cbi-button-reset" id="mitm-log-clear" value="<%:Clean%>" />
+		<label class="mitm-log-hint">
+			<input type="checkbox" id="mitm-log-autorefresh" checked />
+			<%:Start Refresh%>
+		</label>
+		<label class="mitm-log-hint" title="decrypting / request / response / phase= / warn|error">
+			<input type="checkbox" id="mitm-log-summary" checked />
+			<%:Summary%>
+		</label>
+		<span class="mitm-log-hint" id="mitm-log-status"></span>
+	</div>
+</div>
+<script type="text/javascript">//<![CDATA[
+(function () {
+	var ta = document.getElementById('mitm-log-view');
+	var statusEl = document.getElementById('mitm-log-status');
+	var autoEl = document.getElementById('mitm-log-autorefresh');
+	var summaryEl = document.getElementById('mitm-log-summary');
+	var refreshUrl = '<%=luci.dispatcher.build_url("admin", "services", "openclash", "mitm_refresh_log")%>';
+	var clearUrl = '<%=luci.dispatcher.build_url("admin", "services", "openclash", "mitm_del_log")%>';
+	var timer = null;
+	var logLen = 0;
+	var stickBottom = true;
+	var rawLog = '';
+
+	function atBottom() {
+		if (!ta) return true;
+		return (ta.scrollHeight - ta.scrollTop - ta.clientHeight) < 40;
+	}
+
+	function scrollToLatest() {
+		if (!ta) return;
+		ta.scrollTop = ta.scrollHeight;
+		stickBottom = true;
+	}
+
+	function setStatus(msg) {
+		if (statusEl) statusEl.textContent = msg || '';
+	}
+
+	function isSummaryLine(line) {
+		return /msg=(decrypting|request|response|url-rewrite|header-rewrite|body-rewrite|script phase|notification)/.test(line)
+			|| /level=(WARN|ERROR|warn|error)/.test(line)
+			|| /phase=(request|response)/.test(line)
+			|| /msg=script phase=/.test(line)
+			|| /\burl: https?:\/\//.test(line)
+			|| /openclash-mitm (started|stopped)|rules loaded|root certificate/.test(line)
+			|| /client rejected MITM|upstream request failed|script failed|script skipped/.test(line);
+	}
+
+	function filterLog(text) {
+		if (!summaryEl || !summaryEl.checked || !text) return text || '';
+		var out = [];
+		text.split('\n').forEach(function (line) {
+			if (isSummaryLine(line)) out.push(line);
+		});
+		return out.join('\n');
+	}
+
+	function applyLog(text, len, forceScroll) {
+		if (!ta) return;
+		var keepBottom = forceScroll || stickBottom || atBottom();
+		rawLog = text || '';
+		ta.value = filterLog(rawLog);
+		logLen = len || 0;
+		if (keepBottom) setTimeout(scrollToLatest, 0);
+	}
+
+	function refreshLog(forceScroll) {
+		XHR.get(refreshUrl, { log_len: forceScroll ? 0 : logLen }, function (x, data) {
+			if (!x || x.status !== 200 || !data) {
+				setStatus('<%:Refresh%> …');
+				return;
+			}
+			if (data.update || forceScroll || !rawLog) {
+				applyLog(data.log || '', data.len || 0, !!forceScroll);
+			} else {
+				logLen = data.len || logLen;
+			}
+			var shown = ta && ta.value ? ta.value.split('\n').filter(Boolean).length : 0;
+			setStatus(data.len ? ('lines: ' + data.len + (summaryEl && summaryEl.checked ? (' / summary: ' + shown) : '')) : '');
+		});
+	}
+
+	function clearLog() {
+		if (!window.confirm('<%:Clean%>?')) return;
+		XHR.get(clearUrl, null, function () {
+			logLen = 0;
+			applyLog('', 0, true);
+			setStatus('<%:Clean%>');
+			refreshLog(true);
+		});
+	}
+
+	function startAuto() {
+		stopAuto();
+		if (!autoEl || !autoEl.checked) return;
+		timer = window.setInterval(function () { refreshLog(false); }, 2000);
+	}
+
+	function stopAuto() {
+		if (timer) { clearInterval(timer); timer = null; }
+	}
+
+	if (ta) {
+		ta.addEventListener('scroll', function () { stickBottom = atBottom(); });
+	}
+
+	var btnRefresh = document.getElementById('mitm-log-refresh');
+	var btnClear = document.getElementById('mitm-log-clear');
+	if (btnRefresh) btnRefresh.addEventListener('click', function () { refreshLog(true); });
+	if (btnClear) btnClear.addEventListener('click', clearLog);
+	if (autoEl) autoEl.addEventListener('change', startAuto);
+	if (summaryEl) summaryEl.addEventListener('change', function () {
+		applyLog(rawLog, logLen, true);
+	});
+
+	refreshLog(true);
+	startAuto();
+
+	document.addEventListener('click', function (ev) {
+		var t = ev.target;
+		if (!t) return;
+		var a = t.closest ? t.closest('a') : null;
+		if (!a) return;
+		var href = a.getAttribute('href') || '';
+		if (href.indexOf('log') !== -1 || (a.textContent || '').indexOf('<%:Logs%>') !== -1) {
+			setTimeout(function () { refreshLog(true); }, 50);
+		}
+	}, true);
+})();
+//]]></script>
+<%+cbi/valuefooter%>
