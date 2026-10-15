@@ -41,7 +41,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o openclash_mitm .
 ---
 
 
-* IPK & APK [前往下载](https://github.com/vernesong/OpenClash/releases)
+* IPK & APK [前往下载](https://github.com/tactfullotto/OpenClash/releases)
 * MITM 引擎随核心发布目录分发（`core/<branch>/mitm/`，见 Releases / CI）
 
 
