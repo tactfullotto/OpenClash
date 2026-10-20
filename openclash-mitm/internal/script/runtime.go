@@ -18,6 +18,10 @@ import (
 	"github.com/vernesong/OpenClash/openclash-mitm/internal/rewrite"
 )
 
+const maxConcurrentScripts = 16
+
+var polyfillProg = goja.MustCompile("polyfills.js", polyfillJS, false)
+
 // ResultKind is how a script finished.
 type ResultKind int
 
@@ -68,6 +72,9 @@ type Runner struct {
 	Log        *slog.Logger
 	Version    string
 	SkipVerify bool
+
+	sem       chan struct{}
+	progCache sync.Map // string (code) -> *goja.Program
 }
 
 // NewRunner builds a script runner. storeDir and upstream may be empty.
@@ -94,7 +101,20 @@ func NewRunner(storeDir, upstream, version string, skipVerify bool, log *slog.Lo
 		Log:        log,
 		Version:    version,
 		SkipVerify: skipVerify,
+		sem:        make(chan struct{}, maxConcurrentScripts),
 	}, nil
+}
+
+func (r *Runner) compileProgram(name, code string) (*goja.Program, error) {
+	if v, ok := r.progCache.Load(code); ok {
+		return v.(*goja.Program), nil
+	}
+	prog, err := goja.Compile(name, code, false)
+	if err != nil {
+		return nil, err
+	}
+	r.progCache.Store(code, prog)
+	return prog, nil
 }
 
 // Run executes rule against in and returns the $done result.
@@ -102,14 +122,24 @@ func (r *Runner) Run(rule *rewrite.ScriptRule, in Input) (Result, error) {
 	if rule == nil || rule.Code == "" {
 		return Result{Kind: ResultNoop}, nil
 	}
+	prog, err := r.compileProgram(rule.Name, rule.Code)
+	if err != nil {
+		return Result{Kind: ResultNoop}, err
+	}
 	timeout := rule.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
 
+	if r.sem != nil {
+		r.sem <- struct{}{}
+		defer func() { <-r.sem }()
+	}
+
 	loop := eventloop.NewEventLoop(eventloop.EnableConsole(false))
 	var (
 		mu     sync.Mutex
+		vmRef  *goja.Runtime
 		done   Result
 		doneOK bool
 		runErr error
@@ -132,24 +162,33 @@ func (r *Runner) Run(rule *rewrite.ScriptRule, in Input) (Result, error) {
 
 	loop.Start()
 	loop.RunOnLoop(func(vm *goja.Runtime) {
+		mu.Lock()
+		vmRef = vm
+		mu.Unlock()
 		defer func() {
 			if rec := recover(); rec != nil {
 				mu.Lock()
-				runErr = fmt.Errorf("script panic: %v", rec)
+				if runErr == nil {
+					runErr = fmt.Errorf("script panic: %v", rec)
+				}
 				mu.Unlock()
 				finish(Result{Kind: ResultNoop})
 			}
 		}()
 		if err := r.install(vm, loop, rule, in, finish); err != nil {
 			mu.Lock()
-			runErr = err
+			if runErr == nil {
+				runErr = err
+			}
 			mu.Unlock()
 			finish(Result{Kind: ResultNoop})
 			return
 		}
-		if _, err := vm.RunString(rule.Code); err != nil {
+		if _, err := vm.RunProgram(prog); err != nil {
 			mu.Lock()
-			runErr = err
+			if runErr == nil {
+				runErr = err
+			}
 			mu.Unlock()
 			finish(Result{Kind: ResultNoop})
 		}
@@ -158,9 +197,16 @@ func (r *Runner) Run(rule *rewrite.ScriptRule, in Input) (Result, error) {
 	timer := time.AfterFunc(timeout, func() {
 		mu.Lock()
 		already := doneOK
+		v := vmRef
+		if !already && runErr == nil {
+			runErr = fmt.Errorf("script timed out after %v", timeout)
+		}
 		mu.Unlock()
 		if !already {
 			r.Log.Warn("script timed out", "name", rule.Name, "timeout", timeout)
+			if v != nil {
+				v.Interrupt("script timed out")
+			}
 			finish(Result{Kind: ResultNoop})
 		}
 	})
@@ -180,6 +226,8 @@ func (r *Runner) Run(rule *rewrite.ScriptRule, in Input) (Result, error) {
 }
 
 func (r *Runner) install(vm *goja.Runtime, loop *eventloop.EventLoop, rule *rewrite.ScriptRule, in Input, finish func(Result)) error {
+	installPolyfills(vm)
+
 	reqObj := vm.NewObject()
 	_ = reqObj.Set("url", in.URL)
 	_ = reqObj.Set("method", in.Method)
@@ -293,7 +341,6 @@ func (r *Runner) install(vm *goja.Runtime, loop *eventloop.EventLoop, rule *rewr
 	}
 	_ = vm.Set("$httpClient", httpObj)
 
-	installPolyfills(vm)
 	return nil
 }
 
@@ -324,6 +371,7 @@ func (r *Runner) bindHTTP(vm *goja.Runtime, loop *eventloop.EventLoop, method st
 			for k, v := range resp.Headers {
 				_ = hObj.Set(k, v)
 			}
+			wrapCaseInsensitiveHeaders(runtime, hObj)
 			_ = respObj.Set("headers", hObj)
 			var data goja.Value
 			switch b := resp.Body.(type) {
@@ -400,7 +448,14 @@ func headersToObject(vm *goja.Runtime, h http.Header) *goja.Object {
 			_ = obj.Set(k, vs)
 		}
 	}
+	wrapCaseInsensitiveHeaders(vm, obj)
 	return obj
+}
+
+func wrapCaseInsensitiveHeaders(vm *goja.Runtime, obj *goja.Object) {
+	if fn, ok := goja.AssertFunction(vm.Get("__ciHeaders")); ok {
+		_, _ = fn(goja.Undefined(), obj)
+	}
 }
 
 func bodyToJS(vm *goja.Runtime, body []byte, binary bool) goja.Value {
@@ -567,9 +622,28 @@ func installPolyfills(vm *goja.Runtime) {
 		return vm.ToValue(base64.StdEncoding.EncodeToString([]byte(call.Arguments[0].String())))
 	})
 
-	// TextEncoder / TextDecoder / URL / URLSearchParams minimal polyfills
-	_, _ = vm.RunString(`
+	_, _ = vm.RunProgram(polyfillProg)
+}
+
+const polyfillJS = `
 (function(g) {
+  g.__ciHeaders = function(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    var proto = Object.create(Object.prototype);
+    Object.keys(obj).forEach(function(k) {
+      var lk = k.toLowerCase();
+      if (lk !== k && !Object.prototype.hasOwnProperty.call(obj, lk)) {
+        Object.defineProperty(proto, lk, {
+          configurable: true,
+          enumerable: false,
+          get: function() { return this[k]; },
+          set: function(v) { this[k] = v; }
+        });
+      }
+    });
+    if (Object.setPrototypeOf) Object.setPrototypeOf(obj, proto);
+    return obj;
+  };
   if (typeof g.TextEncoder === 'undefined') {
     g.TextEncoder = function TextEncoder() {};
     g.TextEncoder.prototype.encode = function(str) {
@@ -707,5 +781,4 @@ func installPolyfills(vm *goja.Runtime) {
     });
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this);
-`)
-}
+`

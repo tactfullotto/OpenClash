@@ -163,7 +163,11 @@ rule-providers:
 
 func TestPatchIsIdempotentAndKeepsAnchors(t *testing.T) {
 	opts := Options{EnginePort: 7899, OutPort: 7898, BlockQUIC: true}
-	_, _, once := run(t, baseConfig, []*stash.Override{weatherKit(t)}, opts)
+	p1, _, once := run(t, baseConfig, []*stash.Override{weatherKit(t)}, opts)
+	pRepeat, _, _ := run(t, string(once), []*stash.Override{weatherKit(t)}, opts)
+	if len(pRepeat.Rules) != len(p1.Rules) {
+		t.Fatalf("repeated patch duplicated rules: got %d, want %d", len(pRepeat.Rules), len(p1.Rules))
+	}
 	p, _, twice := run(t, string(once), nil, opts)
 	if strings.Count(string(twice), "IN-NAME,openclash-mitm-out") != 0 {
 		t.Errorf("stale route rule kept:\n%s", twice)

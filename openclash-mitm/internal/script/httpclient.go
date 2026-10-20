@@ -17,12 +17,15 @@ import (
 // HTTPClient is the Go backing for $httpClient.*; requests go through upstream
 // when configured (mihomo mitm-out).
 type HTTPClient struct {
-	Upstream string
-	Client   *http.Client
+	Upstream          string
+	Client            *http.Client
+	transport         *http.Transport
+	insecureTransport *http.Transport
 }
 
 func newHTTPClient(upstream string, skipVerify bool) *HTTPClient {
 	hc := &HTTPClient{Upstream: upstream}
+	dialer := (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
 	transport := &http.Transport{
 		Proxy:               hc.proxy,
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: skipVerify},
@@ -30,8 +33,13 @@ func newHTTPClient(upstream string, skipVerify bool) *HTTPClient {
 		MaxIdleConns:        32,
 		IdleConnTimeout:     30 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
-		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:         dialer,
 	}
+	insecureTransport := transport.Clone()
+	insecureTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+
+	hc.transport = transport
+	hc.insecureTransport = insecureTransport
 	// Follow redirects by default (Surge/Stash $httpClient behavior). GitHub
 	// "raw" links 302 to raw.githubusercontent.com; without this, BoxJS
 	// subscription imports get an empty body and report format errors.
@@ -95,9 +103,13 @@ func (h *HTTPClient) do(method string, opts any) (resp *httpResponse, errMsg str
 	}
 	client := h.Client
 	if req.Insecure || !req.AutoRedirect {
-		tr := h.Client.Transport.(*http.Transport).Clone()
-		if req.Insecure {
-			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		tr := h.transport
+		if req.Insecure && h.insecureTransport != nil {
+			tr = h.insecureTransport
+		} else if tr == nil {
+			if base, ok := h.Client.Transport.(*http.Transport); ok {
+				tr = base
+			}
 		}
 		client = &http.Client{Transport: tr, Timeout: timeout}
 		// Default follows redirects (Stash-compatible). Opt out with auto-redirect: false.
@@ -130,7 +142,10 @@ func (h *HTTPClient) do(method string, opts any) (resp *httpResponse, errMsg str
 }
 
 func parseHTTPOpts(method string, opts any) (*httpRequest, error) {
-	req := &httpRequest{Method: strings.ToUpper(method), Timeout: 5 * time.Second, AutoRedirect: true}
+	req := &httpRequest{
+		Method:       strings.ToUpper(method),
+		AutoRedirect: true,
+	}
 	switch v := opts.(type) {
 	case string:
 		req.URL = v

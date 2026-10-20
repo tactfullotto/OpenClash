@@ -61,3 +61,7 @@ build/
 # Patch files (unless intentional)
 *.orig
 *.rej
+
+# MITM build output
+openclash-mitm/bin/
+MITM_OPTIMIZATION_PLAN.md

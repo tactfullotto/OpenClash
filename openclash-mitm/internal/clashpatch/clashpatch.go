@@ -177,17 +177,23 @@ func Patch(config []byte, overrides []*stash.Override, opts Options) ([]byte, *R
 	}
 
 	rules := seqOf(root, "rules")
-	kept := rules.Content[:0]
-	for _, n := range rules.Content {
-		if !strings.Contains(n.Value, "IN-NAME,"+ListenerName) {
-			kept = append(kept, n)
-		}
-	}
-	nodes := make([]*yaml.Node, 0, len(injected)+len(kept))
+	seenRules := make(map[string]bool, len(injected)+len(rules.Content))
+	nodes := make([]*yaml.Node, 0, len(injected)+len(rules.Content))
 	for _, r := range injected {
+		if seenRules[r] {
+			continue
+		}
+		seenRules[r] = true
 		nodes = append(nodes, scalar(r))
 	}
-	rules.Content = append(nodes, kept...)
+	for _, n := range rules.Content {
+		if strings.Contains(n.Value, "IN-NAME,"+ListenerName) || seenRules[n.Value] {
+			continue
+		}
+		seenRules[n.Value] = true
+		nodes = append(nodes, n)
+	}
+	rules.Content = nodes
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)

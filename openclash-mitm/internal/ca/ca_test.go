@@ -1,9 +1,11 @@
 package ca
 
 import (
+	"crypto/tls"
 	"crypto/x509"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -41,5 +43,26 @@ func TestGenerateLoadAndIssue(t *testing.T) {
 	c2, _ := a.CertificateFor("a.example.com")
 	if c1 != c2 {
 		t.Error("leaf certificates should be cached per normalised host")
+	}
+
+	const n = 16
+	certs := make([]*tls.Certificate, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			c, err := a.CertificateFor("concurrent.example.com")
+			if err != nil {
+				t.Errorf("concurrent issue: %v", err)
+			}
+			certs[idx] = c
+		}(i)
+	}
+	wg.Wait()
+	for i := 1; i < n; i++ {
+		if certs[i] != certs[0] {
+			t.Fatal("concurrent CertificateFor calls for same host should coalesce to a single certificate")
+		}
 	}
 }

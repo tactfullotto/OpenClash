@@ -145,7 +145,7 @@ cmd_run() {
    max_body=$(uci_get_config "mitm_max_body_size" || echo 4)
    skip_verify=$(uci_get_config "mitm_skip_cert_verify" || echo 0)
    local cert_listen=""
-   [ "$cert_port" != "0" ] && cert_listen="$(mitm_lan_ip):${cert_port}"
+   [ "$cert_port" != "0" ] && cert_listen=":${cert_port}"
    mkdir -p "${MITM_DIR}/scripts" "${MITM_DIR}/store"
    # Align engine logs with system clock (OpenWrt often lacks /tmp/localtime for Go).
    if [ -z "$TZ" ]; then
@@ -168,6 +168,14 @@ cmd_run() {
 
 engine_pids() {
    unify_ps_pids "${MITM_BIN} run"
+}
+
+# Send SIGHUP so the running engine hot-reloads overrides without dropping connections.
+reload_engine() {
+   local pid
+   for pid in $(engine_pids); do
+      kill -HUP "$pid" 2>/dev/null
+   done
 }
 
 # procd respawns the instance with the new binary or certificate.
@@ -274,6 +282,7 @@ cmd_clear_log() {
 case "$1" in
    patch) cmd_patch "$2" ;;
    run) cmd_run ;;
+   reload) reload_engine ;;
    update) cmd_update ;;
    clean) cmd_clean ;;
    clear-log) cmd_clear_log ;;
@@ -282,7 +291,7 @@ case "$1" in
    status) cmd_status ;;
    enabled) mitm_enabled && [ -x "$MITM_BIN" ] ;;
    *)
-      echo "usage: $0 {patch <config>|run|update|clean|clear-log|regen-ca|core-download [url]|status|enabled}"
+      echo "usage: $0 {patch <config>|run|reload|update|clean|clear-log|regen-ca|core-download [url]|status|enabled}"
       exit 2
       ;;
 esac

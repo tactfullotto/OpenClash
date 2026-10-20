@@ -235,6 +235,22 @@ func TestMITMRewrites(t *testing.T) {
 		t.Errorf("gzip body = %q encoding=%q", b, resp.Header.Get("Content-Encoding"))
 	}
 
+	var gzReqBuf bytes.Buffer
+	gzw := gzip.NewWriter(&gzReqBuf)
+	_, _ = gzw.Write([]byte("hello compressed"))
+	_ = gzw.Close()
+	req, _ = http.NewRequest(http.MethodPost, "https://api.mitm.test/echo-body", &gzReqBuf)
+	req.Header.Set("Content-Encoding", "gzip")
+	resp, err = e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(b) != "bye compressed" {
+		t.Errorf("gzip request body rewrite = %q", b)
+	}
+
 	req, _ = http.NewRequest(http.MethodPost, "https://api.mitm.test/echo-body", strings.NewReader("hello world"))
 	resp, err = e.client.Do(req)
 	if err != nil {

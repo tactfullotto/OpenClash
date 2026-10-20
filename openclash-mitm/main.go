@@ -150,13 +150,13 @@ func cmdRun(args []string) error {
 	}
 	log.Info("root certificate loaded", "name", authority.Cert.Subject.CommonName, "sha1", authority.Fingerprint())
 
-	loader, err := script.NewLoader(*scriptDir, nil)
-	if err != nil {
-		return fmt.Errorf("script dir: %w", err)
-	}
 	runner, err := script.NewRunner(*storeDir, *upstream, version, *skipVerify, log)
 	if err != nil {
 		return fmt.Errorf("script store: %w", err)
+	}
+	loader, err := script.NewLoader(*scriptDir, runner.HTTP.Client)
+	if err != nil {
+		return fmt.Errorf("script dir: %w", err)
 	}
 	compileOpts := &stash.CompileOptions{Loader: loader}
 

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,6 +90,46 @@ $done({body: JSON.stringify(body), headers: {"X-Out": "1"}});
 	}
 }
 
+func TestCaseInsensitiveHeaders(t *testing.T) {
+	r := testRunner(t)
+	code := `
+let ua = $request.headers["user-agent"];
+let ct = $response.headers["content-type"];
+$response.headers["content-type"] = "text/plain";
+$done({body: ua + "|" + ct, headers: $response.headers});
+`
+	res, err := r.Run(rule(t, "^https://a", "n", "response", code, true), Input{
+		URL: "https://a/", Method: "GET",
+		Headers:     http.Header{"User-Agent": []string{"TestAgent/1.0"}},
+		HasResponse: true, Status: 200,
+		RespHeaders: http.Header{"Content-Type": []string{"application/json"}},
+		RespBody:    []byte(`{}`),
+	})
+	if err != nil || string(res.Body) != "TestAgent/1.0|application/json" {
+		t.Fatalf("case-insensitive headers failed: %+v %v body=%q", res, err, res.Body)
+	}
+	if res.Headers.Get("Content-Type") != "text/plain" {
+		t.Errorf("updated Content-Type = %q", res.Headers.Get("Content-Type"))
+	}
+}
+
+func TestScriptInfiniteLoopTimeout(t *testing.T) {
+	r := testRunner(t)
+	rl, err := rewrite.NewScriptRule("^https://a", "loop", "request", "t", false, false, 1, 0, nil, `while (true) {}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rl.Timeout = 100 * time.Millisecond
+	start := time.Now()
+	_, err = r.Run(rl, Input{URL: "https://a/", Method: "GET", Headers: http.Header{}})
+	if err == nil {
+		t.Fatal("expected timeout error for infinite loop")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("infinite loop was not interrupted promptly: %v", elapsed)
+	}
+}
+
 func TestPersistentStore(t *testing.T) {
 	r := testRunner(t)
 	code := `
@@ -107,10 +148,29 @@ $done({body: v});
 	if !ok || got != "v1" {
 		t.Errorf("store = %q %v", got, ok)
 	}
+	st1, err := os.Stat(r.Store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(15 * time.Millisecond)
+	if !r.Store.Write("v1", "k1") {
+		t.Fatal("unchanged write returned false")
+	}
+	st2, err := os.Stat(r.Store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st1.ModTime().Equal(st2.ModTime()) {
+		t.Errorf("store file rewritten despite unchanged value")
+	}
 }
 
 func TestHTTPClientAndNotification(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
 		_, _ = w.Write([]byte(`{"from":"origin"}`))
 	}))
 	defer origin.Close()
@@ -118,17 +178,31 @@ func TestHTTPClientAndNotification(t *testing.T) {
 	r := testRunner(t)
 	code := `
 $notification.post("t", "s", "b");
-$httpClient.get("` + origin.URL + `", (err, resp, data) => {
+$httpClient.get({url: "` + origin.URL + `/redirect"}, (err, resp, data) => {
   if (err) { $done({body: err}); return; }
-  $done({body: data});
+  $done({body: resp.status + ":" + data});
 });
 `
 	res, err := r.Run(rule(t, "^https://a", "n", "response", code, true), Input{
 		URL: "https://a/", Method: "GET", Headers: http.Header{},
 		HasResponse: true, Status: 200, RespHeaders: http.Header{}, RespBody: []byte("{}"),
 	})
-	if err != nil || !strings.Contains(string(res.Body), "from") {
-		t.Fatalf("%+v %v body=%q", res, err, res.Body)
+	if err != nil || !strings.Contains(string(res.Body), `200:{"from":"origin"}`) {
+		t.Fatalf("redirect follow failed: %+v %v body=%q", res, err, res.Body)
+	}
+
+	noRedirCode := `
+$httpClient.get({url: "` + origin.URL + `/redirect", "auto-redirect": false}, (err, resp, data) => {
+  if (err) { $done({body: err}); return; }
+  $done({body: String(resp.status)});
+});
+`
+	res, err = r.Run(rule(t, "^https://a", "n", "response", noRedirCode, true), Input{
+		URL: "https://a/", Method: "GET", Headers: http.Header{},
+		HasResponse: true, Status: 200, RespHeaders: http.Header{}, RespBody: []byte("{}"),
+	})
+	if err != nil || string(res.Body) != "302" {
+		t.Fatalf("auto-redirect=false failed: %+v %v body=%q", res, err, res.Body)
 	}
 }
 
@@ -146,5 +220,4 @@ func TestLoaderPayload(t *testing.T) {
 	if err != nil || code2 != "payload-only" {
 		t.Fatalf("%q %v", code2, err)
 	}
-	_ = time.Second
 }

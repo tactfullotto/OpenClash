@@ -237,6 +237,7 @@ o.inputstyle = "apply"
 o.write = function()
 	m.uci:commit("openclash")
 	SYS.call(MITM_SH .. " clean >/dev/null 2>&1")
+	SYS.call(MITM_SH .. " reload >/dev/null 2>&1")
 end
 
 o = a:option(Button, "Update", " ")

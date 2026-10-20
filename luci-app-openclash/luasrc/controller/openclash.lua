@@ -2160,20 +2160,28 @@ end
 function action_mitm_refresh_log()
 	local logfile = "/tmp/openclash_mitm.log"
 	local log_len = tonumber(HTTP.formvalue("log_len")) or 0
+	local log_sig = HTTP.formvalue("log_sig") or ""
 	local limit = 2000
 	HTTP.prepare_content("application/json")
-	if not fs.access(logfile) then
-		HTTP.write_json({ len = 0, update = true, log = "" })
+	local st = fs.stat(logfile)
+	if not st or (st.size or 0) == 0 then
+		HTTP.write_json({ len = 0, sig = "0:0", update = true, log = "" })
+		return
+	end
+	local sig = tostring(st.size or 0) .. ":" .. tostring(st.mtime or 0)
+	if log_sig ~= "" and log_sig == sig and log_len > 0 then
+		HTTP.write_json({ len = log_len, sig = sig, update = false, log = "" })
 		return
 	end
 	local total_lines = tonumber(SYS.exec("wc -l < " .. logfile)) or 0
-	if total_lines == log_len and log_len > 0 then
-		HTTP.write_json({ len = total_lines, update = false, log = "" })
+	if log_sig == "" and total_lines == log_len and log_len > 0 then
+		HTTP.write_json({ len = total_lines, sig = sig, update = false, log = "" })
 		return
 	end
 	local body = SYS.exec(string.format("tail -n %d %s 2>/dev/null", limit, logfile)) or ""
 	HTTP.write_json({
 		len = total_lines,
+		sig = sig,
 		update = true,
 		log = body:gsub("\n$", "")
 	})

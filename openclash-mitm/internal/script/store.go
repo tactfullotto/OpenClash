@@ -48,6 +48,9 @@ func (s *Store) Write(value, key string) bool {
 	if key == "" {
 		return false
 	}
+	if old, ok := s.data[key]; ok && old == value {
+		return true
+	}
 	s.data[key] = value
 	return s.flushLocked() == nil
 }
@@ -56,11 +59,17 @@ func (s *Store) Write(value, key string) bool {
 func (s *Store) Delete(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.data[key]; !ok {
+		return true
+	}
 	delete(s.data, key)
 	return s.flushLocked() == nil
 }
 
 func (s *Store) flushLocked() error {
+	if s.path == "" {
+		return nil
+	}
 	b, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
 		return err

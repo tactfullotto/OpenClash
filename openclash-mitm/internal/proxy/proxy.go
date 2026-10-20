@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -55,6 +56,7 @@ type Server struct {
 	cfg       Config
 	ca        *ca.Authority
 	log       *slog.Logger
+	errLog    *stdlog.Logger
 	engine    atomic.Pointer[rewrite.Engine]
 	scripts   *script.Runner
 	transport *http.Transport
@@ -88,7 +90,17 @@ func New(cfg Config, authority *ca.Authority, engine *rewrite.Engine, scripts *s
 	if cfg.MaxBodySize <= 0 {
 		cfg.MaxBodySize = 4 << 20
 	}
-	s := &Server{cfg: cfg, ca: authority, log: log, scripts: scripts, aborts: map[string]*abortCount{}}
+	if log == nil {
+		log = slog.Default()
+	}
+	s := &Server{
+		cfg:     cfg,
+		ca:      authority,
+		log:     log,
+		errLog:  slog.NewLogLogger(log.Handler(), slog.LevelDebug),
+		scripts: scripts,
+		aborts:  map[string]*abortCount{},
+	}
 	s.dialer = net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
 	s.engine.Store(engine)
 	s.transport = &http.Transport{
@@ -123,7 +135,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		Handler:           http.HandlerFunc(s.serveIntercepted),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       120 * time.Second,
-		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelDebug),
+		ErrorLog:          s.errLog,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			if v, ok := s.meta.Load(c); ok {
 				return context.WithValue(ctx, ctxKey{}, v)
@@ -139,7 +151,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	s.front = &http.Server{
 		Handler:           http.HandlerFunc(s.serveFront),
 		ReadHeaderTimeout: 30 * time.Second,
-		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelDebug),
+		ErrorLog:          s.errLog,
 	}
 	go func() { _ = s.intercS.Serve(s.intercL) }()
 	go func() {
@@ -411,7 +423,7 @@ func (s *Server) serveIntercepted(w http.ResponseWriter, r *http.Request) {
 			}
 			w.WriteHeader(http.StatusBadGateway)
 		},
-		ErrorLog: slog.NewLogLogger(s.log.Handler(), slog.LevelDebug),
+		ErrorLog: s.errLog,
 	}
 	rp.ServeHTTP(w, r)
 }
@@ -447,9 +459,9 @@ func (s *Server) runRequestScripts(w http.ResponseWriter, r *http.Request, eng *
 		if rule.MaxSize > 0 && rule.MaxSize < limit {
 			limit = rule.MaxSize
 		}
-		b, ok, err := readLimited(r.Body, limit)
+		raw, ok, err := readLimited(r.Body, limit)
 		if err != nil {
-			r.Body = io.NopCloser(bytes.NewReader(b))
+			r.Body = io.NopCloser(bytes.NewReader(raw))
 			s.log.Warn("script skipped, read request body failed", "name", rule.Name, "err", err)
 			return nil, false
 		}
@@ -457,15 +469,25 @@ func (s *Server) runRequestScripts(w http.ResponseWriter, r *http.Request, eng *
 			r.Body = struct {
 				io.Reader
 				io.Closer
-			}{io.MultiReader(bytes.NewReader(b), r.Body), r.Body}
+			}{io.MultiReader(bytes.NewReader(raw), r.Body), r.Body}
 			s.log.Warn("script skipped, request body too large", "name", rule.Name, "limit", limit)
 			return nil, false
 		}
 		r.Body.Close()
-		body = b
+		decoded, encoding, err := decodeBody(raw, r.Header.Get("Content-Encoding"))
+		if err != nil {
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			s.log.Warn("script skipped, decode request body failed", "name", rule.Name, "err", err)
+			return nil, false
+		}
+		if encoding != "" {
+			r.Header.Del("Content-Encoding")
+		}
+		body = decoded
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
 		r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		r.Header.Del("Transfer-Encoding")
 		return body, true
 	}
 
@@ -508,6 +530,8 @@ func (s *Server) runRequestScripts(w http.ResponseWriter, r *http.Request, eng *
 				r.Body = io.NopCloser(bytes.NewReader(body))
 				r.ContentLength = int64(len(body))
 				r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+				r.Header.Del("Content-Encoding")
+				r.Header.Del("Transfer-Encoding")
 			}
 		}
 	}
@@ -639,10 +663,6 @@ func (s *Server) rewriteRequestBody(r *http.Request, eng *rewrite.Engine, url st
 	if r.Body == nil || r.Body == http.NoBody {
 		return
 	}
-	if enc := r.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
-		s.log.Warn("body-rewrite skipped, encoded request body", "url", url, "encoding", enc)
-		return
-	}
 	body, ok, err := readLimited(r.Body, s.cfg.MaxBodySize)
 	if err != nil {
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -657,16 +677,28 @@ func (s *Server) rewriteRequestBody(r *http.Request, eng *rewrite.Engine, url st
 		return
 	}
 	r.Body.Close()
-	out, applied, errs := eng.ApplyBody(rewrite.PhaseRequest, url, body)
+	decoded, encoding, err := decodeBody(body, r.Header.Get("Content-Encoding"))
+	if err != nil {
+		s.log.Warn("body-rewrite skipped, encoded request body", "url", url, "err", err)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		return
+	}
+	out, applied, errs := eng.ApplyBody(rewrite.PhaseRequest, url, decoded)
 	for _, e := range errs {
 		s.log.Warn("body-rewrite failed", "phase", "request", "url", url, "err", e)
 	}
-	if len(applied) > 0 {
+	if len(applied) == 0 {
+		out = body
+	} else {
 		s.log.Info("body-rewrite", "phase", "request", "url", url, "rules", len(applied))
+		if encoding != "" {
+			r.Header.Del("Content-Encoding")
+		}
 	}
 	r.Body = io.NopCloser(bytes.NewReader(out))
 	r.ContentLength = int64(len(out))
 	r.Header.Set("Content-Length", strconv.Itoa(len(out)))
+	r.Header.Del("Transfer-Encoding")
 }
 
 func (s *Server) rewriteResponseBody(resp *http.Response, eng *rewrite.Engine, url string) {

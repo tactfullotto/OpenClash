@@ -48,6 +48,7 @@
 	var clearUrl = '<%=luci.dispatcher.build_url("admin", "services", "openclash", "mitm_del_log")%>';
 	var timer = null;
 	var logLen = 0;
+	var logSig = '';
 	var stickBottom = true;
 	var rawLog = '';
 
@@ -95,11 +96,12 @@
 	}
 
 	function refreshLog(forceScroll) {
-		XHR.get(refreshUrl, { log_len: forceScroll ? 0 : logLen }, function (x, data) {
+		XHR.get(refreshUrl, { log_len: forceScroll ? 0 : logLen, log_sig: forceScroll ? '' : logSig }, function (x, data) {
 			if (!x || x.status !== 200 || !data) {
 				setStatus('<%:Refresh%> …');
 				return;
 			}
+			if (data.sig) logSig = data.sig;
 			if (data.update || forceScroll || !rawLog) {
 				applyLog(data.log || '', data.len || 0, !!forceScroll);
 			} else {
@@ -114,6 +116,7 @@
 		if (!window.confirm('<%:Clean%>?')) return;
 		XHR.get(clearUrl, null, function () {
 			logLen = 0;
+			logSig = '';
 			applyLog('', 0, true);
 			setStatus('<%:Clean%>');
 			refreshLog(true);

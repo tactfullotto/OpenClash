@@ -31,15 +31,23 @@ const (
 	maxCacheSize = 2048
 )
 
+type inflightCert struct {
+	done chan struct{}
+	cert *tls.Certificate
+	err  error
+}
+
 // Authority holds the root CA and a cache of issued leaf certificates.
 type Authority struct {
 	Cert    *x509.Certificate
 	CertPEM []byte
 	key     crypto.Signer
 	leafKey *ecdsa.PrivateKey
+	leafSKI []byte
 
-	mu    sync.Mutex
-	cache map[string]*tls.Certificate
+	mu       sync.Mutex
+	cache    map[string]*tls.Certificate
+	inflight map[string]*inflightCert
 }
 
 // Generate creates a new RSA-2048 root CA and writes it to certPath/keyPath.
@@ -120,12 +128,19 @@ func Load(certPath, keyPath string) (*Authority, error) {
 	if err != nil {
 		return nil, err
 	}
+	var leafSKI []byte
+	if pubDER, err := x509.MarshalPKIXPublicKey(&leafKey.PublicKey); err == nil {
+		sum := sha1.Sum(pubDER)
+		leafSKI = sum[:]
+	}
 	return &Authority{
-		Cert:    cert,
-		CertPEM: certPEM,
-		key:     signer,
-		leafKey: leafKey,
-		cache:   make(map[string]*tls.Certificate),
+		Cert:     cert,
+		CertPEM:  certPEM,
+		key:      signer,
+		leafKey:  leafKey,
+		leafSKI:  leafSKI,
+		cache:    make(map[string]*tls.Certificate),
+		inflight: make(map[string]*inflightCert),
 	}, nil
 }
 
@@ -163,24 +178,58 @@ func (a *Authority) CertificateFor(host string) (*tls.Certificate, error) {
 	if host == "" {
 		return nil, errors.New("empty host")
 	}
+	now := time.Now()
 	a.mu.Lock()
-	if c, ok := a.cache[host]; ok && time.Now().Before(c.Leaf.NotAfter.Add(-time.Hour)) {
+	if c, ok := a.cache[host]; ok && now.Before(c.Leaf.NotAfter.Add(-time.Hour)) {
 		a.mu.Unlock()
 		return c, nil
 	}
+	if call, ok := a.inflight[host]; ok {
+		a.mu.Unlock()
+		<-call.done
+		return call.cert, call.err
+	}
+	call := &inflightCert{done: make(chan struct{})}
+	a.inflight[host] = call
 	a.mu.Unlock()
 
 	c, err := a.issue(host)
-	if err != nil {
-		return nil, err
-	}
+
 	a.mu.Lock()
-	if len(a.cache) >= maxCacheSize {
-		a.cache = make(map[string]*tls.Certificate)
+	call.cert = c
+	call.err = err
+	delete(a.inflight, host)
+	close(call.done)
+	if err == nil {
+		if len(a.cache) >= maxCacheSize {
+			a.evictLocked(now)
+		}
+		a.cache[host] = c
 	}
-	a.cache[host] = c
 	a.mu.Unlock()
-	return c, nil
+	return c, err
+}
+
+func (a *Authority) evictLocked(now time.Time) {
+	cutoff := now.Add(time.Hour)
+	for k, c := range a.cache {
+		if !cutoff.Before(c.Leaf.NotAfter) {
+			delete(a.cache, k)
+		}
+	}
+	if len(a.cache) < maxCacheSize {
+		return
+	}
+	target := maxCacheSize / 8
+	if target < 1 {
+		target = 1
+	}
+	for k := range a.cache {
+		delete(a.cache, k)
+		if target--; target <= 0 {
+			break
+		}
+	}
 }
 
 func (a *Authority) issue(host string) (*tls.Certificate, error) {
@@ -194,13 +243,15 @@ func (a *Authority) issue(host string) (*tls.Certificate, error) {
 		notAfter = a.Cert.NotAfter
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber:   serial,
-		Subject:        pkix.Name{CommonName: host, Organization: []string{"OpenClash MITM"}},
-		NotBefore:      now.Add(-24 * time.Hour),
-		NotAfter:       notAfter,
-		KeyUsage:       x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:    []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		AuthorityKeyId: a.Cert.SubjectKeyId,
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: host, Organization: []string{"OpenClash MITM"}},
+		NotBefore:             now.Add(-24 * time.Hour),
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		AuthorityKeyId:        a.Cert.SubjectKeyId,
+		SubjectKeyId:          a.leafSKI,
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		tmpl.IPAddresses = []net.IP{ip}
