@@ -2466,6 +2466,20 @@ html[data-darkmode="true"] .oc svg {
     vertical-align: top;
 }
 
+/* MITM override table: saved text uses the strongest theme color.
+   Placeholder examples use the medium tone. LuCI dark mode otherwise
+   paints --text-color-medium darker than the inherited input text. */
+#cbi-openclash-mitm_override .cbi-input-text,
+#cbi-openclash-mitm_override .cbi-input-textarea {
+    color: var(--text-color-highest, #111827);
+}
+
+#cbi-openclash-mitm_override .cbi-input-text::placeholder,
+#cbi-openclash-mitm_override .cbi-input-textarea::placeholder {
+    color: var(--text-color-medium, #94a3b8);
+    opacity: 1;
+}
+
 .oc .filename-input-container {
     margin-top: 20px;
     display: flex;
@@ -2695,6 +2709,28 @@ html[data-darkmode="true"] .oc .form-textarea:focus {
 
 html[data-darkmode="true"] .oc .form-textarea::placeholder {
     color: var(--text-secondary);
+}
+
+.oc.mitm-import-panel .form-input,
+.oc.mitm-import-panel .form-textarea {
+    color: var(--text-primary, #111827);
+}
+
+.oc.mitm-import-panel .form-input::placeholder,
+.oc.mitm-import-panel .form-textarea::placeholder {
+    color: #94a3b8;
+    opacity: 1;
+}
+
+html[data-darkmode="true"] .oc.mitm-import-panel .form-input,
+html[data-darkmode="true"] .oc.mitm-import-panel .form-textarea {
+    color: #f9fafb;
+}
+
+html[data-darkmode="true"] .oc.mitm-import-panel .form-input::placeholder,
+html[data-darkmode="true"] .oc.mitm-import-panel .form-textarea::placeholder {
+    color: rgba(255, 255, 255, 0.38);
+    opacity: 1;
 }
 
 html[data-darkmode="true"] .oc .checkmark {
